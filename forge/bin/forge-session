@@ -29,25 +29,24 @@ session_launch() {
   [[ -z "$task_id" ]] && { echo "Error: task_id required." >&2; return 1; }
   get_order_file "$task_id" > /dev/null || exit 1
 
-  # WIP limit — atomic: create state file first, then count
+  # WIP limit — check BEFORE claiming to avoid orphaned state files
   local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
   if [[ -f "$state_file" ]]; then
     log_warn "Task ${task_id} already has an active session."
     return 1
   fi
 
-  # Atomic create via noclobber to avoid TOCTOU race
-  if ! (set -C; echo "task_id=${task_id}" > "$state_file") 2>/dev/null; then
-    log_warn "Task ${task_id} claimed by another process."
-    return 1
-  fi
-
   local active_count max_parallel
   active_count=$(find "$FORGE_DIR/sessions/active" -name '*.state' 2>/dev/null | wc -l | tr -d ' ')
   max_parallel=$(get_config "max_parallel_agents" "3")
-  if [[ $active_count -gt $max_parallel ]]; then
-    rm -f "$state_file"
+  if [[ $active_count -ge $max_parallel ]]; then
     log_warn "WIP limit reached (${active_count}/${max_parallel})"
+    return 1
+  fi
+
+  # Atomic create via noclobber
+  if ! (set -C; echo "task_id=${task_id}" > "$state_file") 2>/dev/null; then
+    log_warn "Task ${task_id} claimed by another process."
     return 1
   fi
 
@@ -76,10 +75,11 @@ session_attach() {
 
 session_kill() {
   local tid="${1:?task_id required}"
-  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
-  [[ -z "$m" ]] && { echo "No session for ${tid}"; return 1; }
-  tmux kill-session -t "$m"
+  # Remove state file FIRST to prevent new launches from being orphaned
   rm -f "$FORGE_DIR/sessions/active/${tid}.state"
+  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
+  [[ -z "$m" ]] && { log_ok "Session cleaned for ${tid}"; return 0; }
+  tmux kill-session -t "$m"
   log_ok "Killed: ${m}"
 }
 
@@ -90,19 +90,23 @@ session_list() {
   echo "  State Files:"
   for f in "$FORGE_DIR/sessions/active"/*.state; do
     [[ -f "$f" ]] || { echo "    (none)"; break; }
+    # Atomic read: snapshot file to avoid mid-write corruption
+    local snapshot
+    snapshot=$(cat "$f" 2>/dev/null) || continue
     local tid iter st
-    tid=$(grep "^task_id=" "$f" | cut -d= -f2)
-    iter=$(grep "^iteration=" "$f" | cut -d= -f2)
-    st=$(grep "^last_test_result=" "$f" | cut -d= -f2)
+    tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2)
+    iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2)
+    st=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2)
     echo "    ${tid}: iter ${iter}, tests: ${st}"
   done
 }
 
 session_killall() {
+  # Remove state files FIRST to prevent races with new launches
+  rm -f "$FORGE_DIR/sessions/active"/*.state
   tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" | while read -r s; do
     tmux kill-session -t "$s" 2>/dev/null; echo "  Killed: $s"
   done
-  rm -f "$FORGE_DIR/sessions/active"/*.state
 }
 
 session_workspace() {

@@ -187,7 +187,7 @@ run_loop() {
   local hash_file="$FORGE_DIR/hashes/${task_id}.hashes"
   : > "$hash_file"
 
-  # Session state file
+  # Session state file (atomic write via temp + rename)
   local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
   {
     echo "task_id=${task_id}"
@@ -198,7 +198,8 @@ run_loop() {
     echo "status=running"
     echo "iteration=0"
     echo "last_test_result=pending"
-  } > "$state_file"
+  } > "${state_file}.tmp"
+  mv "${state_file}.tmp" "$state_file"
 
   # Update work order status
   sed_inplace "s/^status:.*/status: running/" "$order_file"
@@ -219,6 +220,17 @@ run_loop() {
   if $dry_run; then
     echo "DRY RUN — would execute the above. Exiting."
     return 0
+  fi
+
+  # ─── Pre-flight: verify clean worktree ───────────────────
+  # Exclude .forge/ (runtime state managed by forge itself)
+  local dirty
+  dirty=$(git -C "$FORGE_ROOT" status --porcelain 2>/dev/null | grep -v '^\(..\) \.forge/' || true)
+  if [[ -n "$dirty" ]]; then
+    log_error "Working tree not clean. Commit or stash changes first."
+    echo "$dirty" | head -10 | sed 's/^/  /'
+    rm -f "$state_file"
+    return 1
   fi
 
   # ─── Pre-flight: verify tests currently fail ─────────────
@@ -282,10 +294,12 @@ run_loop() {
       violations=$(check_file_isolation "$order_file" "$FORGE_ROOT" 2>/dev/null) || true
       if [[ -n "$violations" ]]; then
         log_error "FILE ISOLATION VIOLATED"
-        echo -e "  ${violations}"
+        echo -e "  ${violations}" | tee -a "$log_file"
         echo "  Agent touched files outside its scope." | tee -a "$log_file"
-        echo "  Reverting changes to forbidden files..." | tee -a "$log_file"
-        # Could auto-revert here, but safer to just stop
+        # Auto-revert: clean worktree was enforced at start, so all changes are from agent
+        log_info "Reverting agent changes..."
+        git -C "$FORGE_ROOT" checkout -- . 2>/dev/null || true
+        git -C "$FORGE_ROOT" clean -fd 2>/dev/null || true
         final_status="isolation_violation"
         break
       fi
@@ -294,9 +308,15 @@ run_loop() {
     # ── Oscillation check ────────────────────────────────
     local current_hash
     current_hash=$(hash_current_diff "$FORGE_ROOT")
+    # Include test output in hash to detect test-framework loops
+    if [[ -n "${preflight_output:-}" ]]; then
+      local test_hash
+      test_hash=$(echo "$preflight_output" | portable_md5)
+      current_hash="${current_hash}:${test_hash}"
+    fi
     if check_oscillation "$current_hash" "$hash_file"; then
       log_warn "OSCILLATION DETECTED — agent is going in circles"
-      echo "  Same diff seen before. Breaking loop." | tee -a "$log_file"
+      echo "  Same code + test output seen before. Breaking loop." | tee -a "$log_file"
       final_status="oscillation"
       break
     fi

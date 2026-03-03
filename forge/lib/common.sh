@@ -20,10 +20,10 @@ RESET='\033[0m'
 # Abstract macOS vs Linux differences.
 
 sed_inplace() {
-  if sed --version 2>/dev/null | grep -q 'GNU'; then
-    sed -i "$@"
+  if sed --version 2>&1 | grep -q 'GNU'; then
+    sed -i "$@" || { echo "sed_inplace failed" >&2; return 1; }
   else
-    sed -i '' "$@"
+    sed -i '' "$@" || { echo "sed_inplace failed" >&2; return 1; }
   fi
 }
 
@@ -98,7 +98,10 @@ set_config() {
 parse_order_field() {
   local order_file="$1"
   local field="$2"
-  sed -n '/^---$/,/^---$/p' "$order_file" | grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//"
+  [[ -z "$field" ]] && return 1
+  # Handle YAML delimiters with optional trailing whitespace
+  sed -n '/^---[[:space:]]*$/,/^---[[:space:]]*$/p' "$order_file" | \
+    grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//"
 }
 
 parse_order_list_field() {
@@ -128,7 +131,8 @@ send_to_agent() {
   case "$agent_type" in
     claude)
       cd "$project_dir"
-      claude -p "$prompt" --output-format text --allowedTools Edit,Write,Read,Bash,Glob,Grep 2>&1 | tee -a "$log_file"
+      # No Bash tool — agents must use Edit/Write/Read to respect file isolation
+      claude -p "$prompt" --output-format text --allowedTools Edit,Write,Read,Glob,Grep 2>&1 | tee -a "$log_file"
       ;;
     codex)
       cd "$project_dir"
@@ -149,8 +153,15 @@ send_to_agent() {
 
 validate_test_cmd() {
   local cmd="$1"
-  local unsafe_re='[;`$|&<>]'
-  if [[ "$cmd" =~ $unsafe_re ]] || [[ "$cmd" =~ \$\( ]]; then
+  # Reject control characters (newline injection bypass)
+  if [[ "$cmd" == *$'\n'* ]] || [[ "$cmd" == *$'\r'* ]]; then
+    echo -e "${RED}Error: test_cmd contains control characters${RESET}" >&2
+    return 1
+  fi
+  # Reject shell metacharacters using explicit string matching (not regex)
+  if [[ "$cmd" == *";"* ]] || [[ "$cmd" == *"|"* ]] || [[ "$cmd" == *"&"* ]] || \
+     [[ "$cmd" == *"<"* ]] || [[ "$cmd" == *">"* ]] || [[ "$cmd" == *'`'* ]] || \
+     [[ "$cmd" == *'$('* ]] || [[ "$cmd" == *'${'* ]]; then
     echo -e "${RED}Error: test_cmd contains unsafe characters: ${cmd}${RESET}" >&2
     echo "  Test commands must not contain shell metacharacters." >&2
     echo "  Wrap complex commands in a script and reference the script path." >&2
@@ -163,13 +174,15 @@ run_test_suite() {
   local test_cmd="$1"
   local project_dir="$2"
   local raw_output
-  local exit_code
+  local exit_code=0
 
   validate_test_cmd "$test_cmd" || return 1
 
   cd "$project_dir"
-  raw_output=$(eval "$test_cmd" 2>&1) || exit_code=$?
-  exit_code=${exit_code:-0}
+  # Use argv array instead of eval to prevent shell re-parsing injection
+  local -a argv
+  read -r -a argv <<< "$test_cmd"
+  raw_output=$("${argv[@]}" 2>&1) || exit_code=$?
 
   echo "$raw_output"
   return "$exit_code"
@@ -179,18 +192,27 @@ parse_test_failures() {
   local raw_output="$1"
   local test_framework="${2:-pytest}"
 
+  # Redact details that could enable Goodhart bypass via error text
+  local redacted
+  redacted=$(echo "$raw_output" | \
+    sed -E 's|(/[^ ]*/)*([^ /]+\.(py|js|ts|go)):[0-9]+|[TEST]|g' | \
+    sed -E 's/(AssertionError|ValueError|TypeError|KeyError|RuntimeError): .*/assertion failed/' | \
+    sed -E 's/assert .+ == .+/assertion failed/' | \
+    sed -E 's/expected .* got .*/value mismatch/' \
+  )
+
   case "$test_framework" in
     pytest)
-      echo "$raw_output" | grep -E "(FAILED|ERROR|AssertionError|Exception)" | head -10
+      echo "$redacted" | grep -E "(FAILED|ERROR)" | head -5
       ;;
     jest)
-      echo "$raw_output" | grep -E "(FAIL|✕|●)" | head -10
+      echo "$redacted" | grep -E "(FAIL|✕|●)" | head -5
       ;;
     go)
-      echo "$raw_output" | grep -E "(FAIL|---)" | head -10
+      echo "$redacted" | grep -E "(FAIL|---)" | head -5
       ;;
     *)
-      echo "$raw_output" | grep -iE "(fail|error|assert|exception|panic)" | head -10
+      echo "$redacted" | grep -iE "(fail|error)" | head -5
       ;;
   esac
 }
@@ -226,10 +248,21 @@ count_test_results() {
 
 hash_current_diff() {
   local project_dir="$1"
-  cd "$project_dir"
+  cd "$project_dir" || return 1
   {
-    git diff 2>/dev/null
-    git ls-files -o --exclude-standard -z 2>/dev/null | xargs -0 cat 2>/dev/null
+    git diff 2>/dev/null || true
+    # Hash untracked text files under 500KB, skip binaries
+    while IFS= read -r f; do
+      [[ -f "$f" ]] || continue
+      local fsize
+      fsize=$(wc -c < "$f" 2>/dev/null || echo 999999)
+      fsize="${fsize// /}"
+      if [[ $fsize -lt 500000 ]]; then
+        cat "$f" 2>/dev/null || true
+      else
+        echo "SKIP:$f"
+      fi
+    done < <(git ls-files -o --exclude-standard 2>/dev/null)
   } | portable_md5
 }
 
@@ -243,8 +276,14 @@ check_oscillation() {
   while ! (set -C; echo $$ > "$lock_file") 2>/dev/null; do
     attempts=$((attempts + 1))
     if [[ $attempts -gt 50 ]]; then
-      rm -f "$lock_file"
-      break
+      # Only remove lock if owner process is dead (stale lock)
+      local lock_pid
+      lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+      if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        rm -f "$lock_file"
+        continue
+      fi
+      return 1  # Give up rather than break a live lock
     fi
     sleep 0.1
   done
@@ -256,7 +295,12 @@ check_oscillation() {
     echo "$current_hash" >> "$hash_file"
   fi
 
-  rm -f "$lock_file"
+  # Only delete lock if we still own it
+  local current_pid
+  current_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+  if [[ "$current_pid" == "$$" ]]; then
+    rm -f "$lock_file"
+  fi
   return "$result"
 }
 
@@ -301,7 +345,10 @@ signal_done() {
   local task_id="$1"
   local timestamp
   timestamp=$(portable_date_iso)
-  echo "$timestamp" > "$FORGE_DIR/signals/${task_id}.done"
+  local signal_file="$FORGE_DIR/signals/${task_id}.done"
+  # Atomic write: temp file + rename
+  echo "$timestamp" > "${signal_file}.tmp"
+  mv "${signal_file}.tmp" "$signal_file"
   log_ok "Task ${task_id} signaled DONE"
 }
 
@@ -319,10 +366,17 @@ check_dependencies() {
   fi
 
   local all_met=true
+  local unmet=""
   for dep in $(echo "$deps" | tr ',' ' '); do
     dep=$(echo "$dep" | xargs)
+    [[ -z "$dep" ]] && continue
+    # Validate dependency exists as a work order
+    if [[ ! -f "$FORGE_DIR/work_orders/${dep}.md" ]]; then
+      echo "Unknown dependency: ${dep}" >&2
+      return 2
+    fi
     if ! is_task_done "$dep"; then
-      echo "$dep"
+      unmet="${unmet}${dep} "
       all_met=false
     fi
   done
@@ -330,6 +384,7 @@ check_dependencies() {
   if $all_met; then
     return 0
   else
+    echo "$unmet"
     return 1
   fi
 }
@@ -364,27 +419,30 @@ check_file_isolation() {
 
   local violations=""
 
+  # Patterns are ERE regex. Trim whitespace from comma-separated entries.
   if [[ -n "$forbidden" ]]; then
-    for pattern in $(echo "$forbidden" | tr ',' ' '); do
-      pattern=$(echo "$pattern" | xargs)
+    while IFS=',' read -r pattern; do
+      pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -z "$pattern" ]] && continue
       local matches
       matches=$(echo "$changed_files" | grep -E "$pattern" || true)
       if [[ -n "$matches" ]]; then
         violations="${violations}FORBIDDEN: ${matches}\n"
       fi
-    done
+    done <<< "$forbidden"
   fi
 
   if [[ -n "$allowed" ]]; then
     while IFS= read -r file; do
       local is_allowed=false
-      for pattern in $(echo "$allowed" | tr ',' ' '); do
-        pattern=$(echo "$pattern" | xargs)
+      while IFS=',' read -r pattern; do
+        pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$pattern" ]] && continue
         if echo "$file" | grep -qE "$pattern"; then
           is_allowed=true
           break
         fi
-      done
+      done <<< "$allowed"
       if ! $is_allowed; then
         violations="${violations}NOT_ALLOWED: ${file}\n"
       fi

@@ -39,11 +39,17 @@ echo "Fixed target.txt"
 MOCK
 chmod +x mock_bin/claude
 
+# Commit setup files so worktree is clean for the loop
+git add -A && git commit -q -m "test setup"
+
 # Create work order
 bash "$FORGE_BIN" order create L01 \
   --goal "Fix target.txt to contain CORRECT" \
   --test "bash check_target.sh" \
   --agent claude 2>&1 >/dev/null
+
+# Commit work order so worktree is clean
+git add -A && git commit -q -m "add work order"
 
 # Run loop with mock agent on PATH
 export PATH="$TMP/mock_bin:$PATH"

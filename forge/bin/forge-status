@@ -16,11 +16,13 @@ has_active=false
 for f in "$FORGE_DIR/sessions/active"/*.state; do
   [[ -f "$f" ]] || continue
   has_active=true
-  tid=$(grep "^task_id=" "$f" | cut -d= -f2)
-  agent=$(grep "^agent=" "$f" | cut -d= -f2)
-  iter=$(grep "^iteration=" "$f" | cut -d= -f2)
-  max=$(grep "^max_iterations=" "$f" | cut -d= -f2)
-  test_res=$(grep "^last_test_result=" "$f" | cut -d= -f2)
+  # Atomic read: snapshot file to avoid mid-write corruption
+  snapshot=$(cat "$f" 2>/dev/null) || continue
+  tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2)
+  agent=$(echo "$snapshot" | grep "^agent=" | cut -d= -f2)
+  iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2)
+  max=$(echo "$snapshot" | grep "^max_iterations=" | cut -d= -f2)
+  test_res=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2)
   pct=0
   if [[ -n "$max" ]] && [[ "$max" != "0" ]]; then
     pct=$((iter * 100 / max))
