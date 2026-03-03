@@ -1,0 +1,12 @@
+[project]
+name = "dante"
+version = "0.1.0"
+description = "Multi-agent terminal orchestration with test-driven convergence loops"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Faycal Farhat", email = "ff@gardenfn.dev" },
+]
+
+[project.urls]
+Repository = "https://github.com/FF-GardenFn/Dante"

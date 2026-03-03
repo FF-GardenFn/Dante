@@ -1,0 +1,9 @@
+{
+  "name": "forge",
+  "description": "Orchestration plugin for the Forge multi-agent terminal system. Decompose goals into work orders, design Goodhart-resistant test suites, launch convergence loops, and review results.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Faycal Farhat",
+    "url": "https://github.com/FF-GardenFn/Dante"
+  }
+}

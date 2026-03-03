@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# forge-review -- Post-completion review
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
+init_forge_root
+
+task_id="${1:?Usage: forge review <task_id>}"
+order_file=$(get_order_file "$task_id") || exit 1
+
+echo ""
+echo -e "${BOLD}REVIEW: ${task_id}${RESET}"
+echo "================================================"
+echo ""
+
+echo -e "${BOLD}Work Order:${RESET}"
+cat "$order_file"
+echo ""
+
+echo -e "${BOLD}Git Diff Summary:${RESET}"
+cd "$FORGE_ROOT"
+git diff --stat 2>/dev/null || echo "  (not a git repo or no changes)"
+echo ""
+
+echo -e "${BOLD}File Isolation:${RESET}"
+violations=$(check_file_isolation "$order_file" "$FORGE_ROOT" 2>/dev/null) || true
+if [[ -n "$violations" ]]; then
+  echo -e "  ${RED}VIOLATIONS:${RESET}"
+  echo "  $violations"
+else
+  echo -e "  ${GREEN}Clean -- all changes within scope.${RESET}"
+fi
+echo ""
+
+echo -e "${BOLD}Test Results:${RESET}"
+test_cmd=$(parse_order_field "$order_file" "test_cmd")
+if [[ -n "$test_cmd" ]]; then
+  echo "  Running: $test_cmd"
+  run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1 | tail -10 | sed "s/^/  /"
+else
+  echo "  No test command defined."
+fi
+echo ""
+
+echo -e "${BOLD}Session Logs:${RESET}"
+logfile=$(ls -t "$FORGE_DIR/sessions/logs/${task_id}"*.log 2>/dev/null | head -1)
+if [[ -n "${logfile:-}" ]]; then
+  echo "  Latest: $logfile"
+  echo "  Last 10 lines:"
+  tail -10 "$logfile" | sed "s/^/    /"
+else
+  echo "  No logs found."
+fi
+echo ""

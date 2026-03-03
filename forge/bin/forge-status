@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# forge-status -- Real-time Dashboard
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
+init_forge_root
+
+echo ""
+echo -e "${BOLD}  FORGE STATUS${RESET}"
+echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${RESET}"
+echo ""
+
+echo -e "  ${BOLD}ACTIVE AGENTS${RESET}"
+echo "  -----------------------------------------------"
+has_active=false
+for f in "$FORGE_DIR/sessions/active"/*.state; do
+  [[ -f "$f" ]] || continue
+  has_active=true
+  tid=$(grep "^task_id=" "$f" | cut -d= -f2)
+  agent=$(grep "^agent=" "$f" | cut -d= -f2)
+  iter=$(grep "^iteration=" "$f" | cut -d= -f2)
+  max=$(grep "^max_iterations=" "$f" | cut -d= -f2)
+  test_res=$(grep "^last_test_result=" "$f" | cut -d= -f2)
+  pct=0
+  if [[ -n "$max" ]] && [[ "$max" != "0" ]]; then
+    pct=$((iter * 100 / max))
+  fi
+  printf "  %-6s %-8s iter %s/%s (%s%%)  tests: %s
+" "$tid" "$agent" "$iter" "$max" "$pct" "$test_res"
+done
+if ! $has_active; then echo "  (no agents running)"; fi
+
+echo ""
+echo -e "  ${BOLD}WORK ORDERS${RESET}"
+echo "  -----------------------------------------------"
+co=0; cr=0; cd_=0; cf=0
+for f in "$FORGE_DIR/work_orders"/*.md; do
+  [[ -f "$f" ]] || continue
+  tid=$(parse_order_field "$f" "id")
+  status=$(parse_order_field "$f" "status")
+  pri=$(parse_order_field "$f" "priority")
+  goal=$(parse_order_field "$f" "goal")
+  is_task_done "$tid" && status="done"
+  case "$status" in open) co=$((co+1));; running) cr=$((cr+1));; done) cd_=$((cd_+1));; failed) cf=$((cf+1));; esac
+  printf "  %-6s [P%s] %-8s %.45s
+" "$tid" "$pri" "$status" "$goal"
+done
+
+echo ""
+echo "  Open: $co  Running: $cr  Done: $cd_  Failed: $cf"
+tc=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -c "^forge-" || echo "0")
+mp=$(get_config "max_parallel_agents" "3")
+echo "  Tmux: $tc/$mp (WIP limit)"
+echo ""

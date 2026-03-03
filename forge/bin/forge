@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+FORGE_VERSION="0.1.0"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+LIB_DIR="$(dirname "$SCRIPT_DIR")/lib"
+
+show_help() {
+  echo ""
+  echo "  FORGE — Multi-Agent Terminal Orchestration"
+  echo ""
+  echo "  COMMANDS:"
+  echo "    forge init                  Initialize .forge/ in current project"
+  echo "    forge order <subcommand>    Manage work orders (dispatch layer)"
+  echo "    forge loop <task_id>        Run test-driven convergence loop"
+  echo "    forge session <subcommand>  Manage tmux agent sessions"
+  echo "    forge status                Real-time dashboard"
+  echo "    forge done <task_id>        Signal task completion"
+  echo "    forge log <task_id>         View task logs"
+  echo "    forge review <task_id>      Post-completion review"
+  echo ""
+  echo "  WORKFLOW:"
+  echo "    1. forge init"
+  echo "    2. forge order create C14 --goal 'Fix db locks' --test 'pytest tests/test_db.py'"
+  echo "    3. forge loop C14 --agent claude --max-iter 30"
+  echo "    4. forge status"
+  echo "    5. forge review C14"
+  echo ""
+}
+
+forge_init() {
+  if [[ -d ".forge" ]] && [[ "${1:-}" != "--force" ]]; then
+    echo "Warn: .forge/ already exists. Use --force to reinitialize."
+    return 1
+  fi
+  echo "Initializing Forge in $(pwd)..."
+  mkdir -p .forge/work_orders .forge/sessions/active .forge/sessions/logs
+  mkdir -p .forge/tests .forge/signals .forge/context .forge/hashes
+
+  printf '%s\n' \
+    "max_parallel_agents=3" \
+    "architect_agent=claude" \
+    "default_max_iterations=30" \
+    "default_agent=claude" \
+    "default_test_framework=pytest" \
+    "oscillation_window=3" \
+    "log_agent_output=true" \
+    > .forge/config
+
+  printf '%s\n' \
+    "# Project Architecture" \
+    "> Describe your project structure. Injected into agent prompts." \
+    "" "## Module Map" "## Invariants" "## Module Dependencies" \
+    > .forge/context/architecture.md
+
+  printf '%s\n' \
+    "# Agent Rules" \
+    "- No schema migrations without approval" \
+    "- No new dependencies without approval" \
+    "- All changes must have tests" \
+    "- Stay within work order file scope" \
+    > .forge/context/rules.md
+
+  printf '%s\n' \
+    "# Lessons Learned" \
+    "> Format: [DATE] [TASK_ID] Finding" \
+    > .forge/context/lessons.md
+
+  echo "Forge initialized. Edit .forge/context/ files, then create work orders."
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    ""|"-h"|"--help") show_help ;;
+    "-v"|"--version") echo "forge v${FORGE_VERSION}" ;;
+    init) shift; forge_init "$@" ;;
+    order) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-order" "$@" ;;
+    loop) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-loop" "$@" ;;
+    session) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-session" "$@" ;;
+    status) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-status" "$@" ;;
+    done) shift; source "$LIB_DIR/common.sh"; init_forge_root; signal_done "${1:?Usage: forge done <task_id>}" ;;
+    log) shift; source "$LIB_DIR/common.sh"; init_forge_root
+      local tid="${1:?Usage: forge log <task_id>}"
+      local logfile; logfile=$(ls -t "$FORGE_DIR/sessions/logs/${tid}"*.log 2>/dev/null | head -1)
+      if [[ -n "$logfile" ]]; then less +G "$logfile"; else echo "No logs for ${tid}"; fi ;;
+    review) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-review" "$@" ;;
+    *) echo "Unknown: ${cmd}. Run 'forge --help'." >&2; exit 1 ;;
+  esac
+}
+main "$@"

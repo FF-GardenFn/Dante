@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# forge-order — Work Order Management (Dispatch Layer)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
+init_forge_root
+
+show_help() {
+  echo ""
+  echo "  forge order — Work Order Management"
+  echo ""
+  echo "  SUBCOMMANDS:"
+  echo "    create <id>   Create a new work order"
+  echo "    list           List all work orders"
+  echo "    show <id>     Show a work order"
+  echo "    edit <id>     Open in editor"
+  echo ""
+  echo "  CREATE OPTIONS:"
+  echo "    --goal <text>              One-line goal (required)"
+  echo "    --test <command>           Test command for verification"
+  echo "    --files-allowed <pattern>  Files agent CAN touch"
+  echo "    --files-forbidden <pat>    Files agent CANNOT touch"
+  echo "    --constraints <text>       Constraints"
+  echo "    --depends-on <ids>         Prerequisite task IDs"
+  echo "    --agent <type>             claude|codex|gemini"
+  echo "    --priority <1-5>           1=highest"
+  echo ""
+}
+
+order_create() {
+  local task_id="" goal="" test_cmd="" files_allowed="" files_forbidden=""
+  local constraints="" depends_on="" agent="" priority="3"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --goal) goal="$2"; shift 2 ;;
+      --test) test_cmd="$2"; shift 2 ;;
+      --files-allowed) files_allowed="$2"; shift 2 ;;
+      --files-forbidden) files_forbidden="$2"; shift 2 ;;
+      --constraints) constraints="$2"; shift 2 ;;
+      --depends-on) depends_on="$2"; shift 2 ;;
+      --agent) agent="$2"; shift 2 ;;
+      --priority) priority="$2"; shift 2 ;;
+      -*) echo "Unknown option: $1" >&2; return 1 ;;
+      *) if [[ -z "$task_id" ]]; then task_id="$1"; fi; shift ;;
+    esac
+  done
+
+  if [[ -z "$task_id" ]]; then echo "Error: task_id required." >&2; return 1; fi
+  if [[ -z "$goal" ]]; then echo "Error: --goal required." >&2; return 1; fi
+
+  local order_file="$FORGE_DIR/work_orders/${task_id}.md"
+  if [[ -f "$order_file" ]]; then echo "Error: '${task_id}' already exists." >&2; return 1; fi
+
+  local ts; ts=$(date '+%Y-%m-%d %H:%M')
+
+  {
+    echo "---"
+    echo "id: ${task_id}"
+    echo "status: open"
+    echo "priority: ${priority}"
+    echo "created: ${ts}"
+    echo "agent: ${agent:-unassigned}"
+    echo "goal: ${goal}"
+    echo "test_cmd: ${test_cmd}"
+    echo "files_allowed: ${files_allowed}"
+    echo "files_forbidden: ${files_forbidden}"
+    echo "constraints: ${constraints}"
+    echo "depends_on: ${depends_on}"
+    echo "---"
+    echo ""
+    echo "# Work Order: ${task_id}"
+    echo ""
+    echo "## Goal"
+    echo "${goal}"
+    echo ""
+    echo "## Acceptance Criteria"
+    if [[ -n "$test_cmd" ]]; then
+      echo "- Tests pass: \`${test_cmd}\`"
+    else
+      echo "- [ ] Define acceptance criteria"
+    fi
+    echo ""
+    echo "## Constraints"
+    if [[ -n "$constraints" ]]; then
+      echo "$constraints" | tr ',' '\n' | while read -r c; do echo "- $(echo "$c" | xargs)"; done
+    else
+      echo "- None specified"
+    fi
+    echo ""
+    echo "## File Scope"
+    [[ -n "$files_allowed" ]] && echo "Allowed: ${files_allowed}"
+    [[ -n "$files_forbidden" ]] && echo "Forbidden: ${files_forbidden}"
+    echo ""
+    echo "## Dependencies"
+    if [[ -n "$depends_on" ]]; then echo "Blocked by: ${depends_on}"; else echo "None"; fi
+    echo ""
+    echo "## Agent Notes"
+    echo ""
+  } > "$order_file"
+
+  log_ok "Work order created: ${task_id} — ${goal}"
+}
+
+order_list() {
+  echo ""
+  printf "  %-8s %-8s %-4s %-10s %s\n" "ID" "STATUS" "PRI" "AGENT" "GOAL"
+  printf "  %-8s %-8s %-4s %-10s %s\n" "------" "------" "---" "--------" "------------------------------"
+
+  for f in "$FORGE_DIR/work_orders"/*.md; do
+    [[ -f "$f" ]] || continue
+    local tid sta pri ag go
+    tid=$(parse_order_field "$f" "id")
+    sta=$(parse_order_field "$f" "status")
+    pri=$(parse_order_field "$f" "priority")
+    ag=$(parse_order_field "$f" "agent")
+    go=$(parse_order_field "$f" "goal")
+    is_task_done "$tid" && sta="done"
+    printf "  %-8s %-8s %-4s %-10s %.50s\n" "$tid" "$sta" "$pri" "${ag:-—}" "$go"
+  done
+  echo ""
+}
+
+order_show() {
+  local task_id="${1:?Usage: forge order show <task_id>}"
+  local f; f=$(get_order_file "$task_id") || exit 1
+  cat "$f"
+}
+
+order_edit() {
+  local task_id="${1:?Usage: forge order edit <task_id>}"
+  local f; f=$(get_order_file "$task_id") || exit 1
+  "${EDITOR:-vim}" "$f"
+}
+
+subcmd="${1:-}"
+case "$subcmd" in
+  ""|"-h"|"--help") show_help ;;
+  create) shift; order_create "$@" ;;
+  list|ls) shift; order_list "$@" ;;
+  show) shift; order_show "$@" ;;
+  edit) shift; order_edit "$@" ;;
+  *) echo "Unknown: $subcmd" >&2; exit 1 ;;
+esac

@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging / build
+build/
+dist/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.hypothesis/
+.cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data / logs / temp
+logs/
+log/
+outputs/
+output/
+results/
+result.md
+*.log
+.tmp/
+*.tmp
+
+# Secrets and environment
+.env
+.env.*
+.envrc
+*.secret
+*.secrets
+
+# IDE / Editor
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives
+*.tar.gz
+*.zip
+
+# Patch artifacts
+*.orig
+*.rej
+
+# ML large files
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pb
+*.tflite
+*.h5
+
+# HuggingFace / Transformers caches
+.huggingface/
+transformers_cache/
+
+# Forge runtime state (created by forge init, per-project)
+.forge/
+forge/tests/tmp/
+
+# Project-specific
+.claude/settings.local.json
+remotegit
+alchemy/

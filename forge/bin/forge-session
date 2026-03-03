@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# forge-session — Tmux Session Manager for Parallel Agents
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
+init_forge_root
+
+show_help() {
+  echo "  forge session — Tmux Session Manager"
+  echo "    launch <task_id> [opts]   Launch agent in tmux with loop"
+  echo "    attach <task_id>          Attach to session"
+  echo "    kill <task_id>            Kill session"
+  echo "    list                      List sessions"
+  echo "    killall                   Kill all"
+  echo "    workspace                 Create full layout"
+  echo "  LAUNCH OPTIONS: --agent <type> --max-iter <n> --detach"
+}
+
+session_launch() {
+  local task_id="" agent="" max_iter="" detach=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent) agent="$2"; shift 2 ;;
+      --max-iter) max_iter="$2"; shift 2 ;;
+      --detach) detach=true; shift ;;
+      *) if [[ -z "$task_id" ]]; then task_id="$1"; fi; shift ;;
+    esac
+  done
+  [[ -z "$task_id" ]] && { echo "Error: task_id required." >&2; return 1; }
+  get_order_file "$task_id" > /dev/null || exit 1
+
+  # WIP limit — atomic: create state file first, then count
+  local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
+  if [[ -f "$state_file" ]]; then
+    log_warn "Task ${task_id} already has an active session."
+    return 1
+  fi
+
+  # Atomic create via noclobber to avoid TOCTOU race
+  if ! (set -C; echo "task_id=${task_id}" > "$state_file") 2>/dev/null; then
+    log_warn "Task ${task_id} claimed by another process."
+    return 1
+  fi
+
+  local active_count max_parallel
+  active_count=$(find "$FORGE_DIR/sessions/active" -name '*.state' 2>/dev/null | wc -l | tr -d ' ')
+  max_parallel=$(get_config "max_parallel_agents" "3")
+  if [[ $active_count -gt $max_parallel ]]; then
+    rm -f "$state_file"
+    log_warn "WIP limit reached (${active_count}/${max_parallel})"
+    return 1
+  fi
+
+  local loop_cmd="$SCRIPT_DIR/forge-loop ${task_id}"
+  [[ -n "$agent" ]] && loop_cmd+=" --agent ${agent}"
+  [[ -n "$max_iter" ]] && loop_cmd+=" --max-iter ${max_iter}"
+
+  local sn; sn=$(get_session_name "$task_id" "${agent:-agent}")
+  if tmux has-session -t "$sn" 2>/dev/null; then
+    log_warn "Session '${sn}' exists. Kill or attach."
+    return 1
+  fi
+
+  tmux new-session -d -s "$sn" -c "$FORGE_ROOT" \
+    "bash -c '${loop_cmd}; echo Done. Press enter.; read'"
+  log_ok "Launched: ${sn}"
+  if ! $detach; then tmux attach-session -t "$sn"; fi
+}
+
+session_attach() {
+  local tid="${1:?task_id required}"
+  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
+  [[ -z "$m" ]] && { echo "No session for ${tid}"; return 1; }
+  tmux attach-session -t "$m"
+}
+
+session_kill() {
+  local tid="${1:?task_id required}"
+  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
+  [[ -z "$m" ]] && { echo "No session for ${tid}"; return 1; }
+  tmux kill-session -t "$m"
+  rm -f "$FORGE_DIR/sessions/active/${tid}.state"
+  log_ok "Killed: ${m}"
+}
+
+session_list() {
+  echo "  Active Forge Sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" || echo "    (none)"
+  echo ""
+  echo "  State Files:"
+  for f in "$FORGE_DIR/sessions/active"/*.state; do
+    [[ -f "$f" ]] || { echo "    (none)"; break; }
+    local tid iter st
+    tid=$(grep "^task_id=" "$f" | cut -d= -f2)
+    iter=$(grep "^iteration=" "$f" | cut -d= -f2)
+    st=$(grep "^last_test_result=" "$f" | cut -d= -f2)
+    echo "    ${tid}: iter ${iter}, tests: ${st}"
+  done
+}
+
+session_killall() {
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" | while read -r s; do
+    tmux kill-session -t "$s" 2>/dev/null; echo "  Killed: $s"
+  done
+  rm -f "$FORGE_DIR/sessions/active"/*.state
+}
+
+session_workspace() {
+  local ws="forge-workspace"
+  if tmux has-session -t "$ws" 2>/dev/null; then
+    tmux attach-session -t "$ws"; return
+  fi
+  tmux new-session -d -s "$ws" -c "$FORGE_ROOT" "watch -n5 $SCRIPT_DIR/forge-status"
+  tmux split-window -v -t "$ws" -c "$FORGE_ROOT" -p 30
+  tmux select-pane -t "$ws:0.0"
+  tmux split-window -h -t "$ws" -c "$FORGE_ROOT"
+  tmux select-pane -t "$ws:0.0"
+  log_ok "Workspace: 2 agent panes (top) + status (bottom)"
+  tmux attach-session -t "$ws"
+}
+
+case "${1:-}" in
+  ""|"-h"|"--help") show_help ;;
+  launch) shift; session_launch "$@" ;;
+  attach) shift; session_attach "$@" ;;
+  kill) shift; session_kill "$@" ;;
+  list|ls) session_list ;;
+  killall) session_killall ;;
+  workspace|ws) session_workspace ;;
+  *) echo "Unknown: $1" >&2; exit 1 ;;
+esac

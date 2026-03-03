@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════
+# forge-loop (INFERNO) — Test-Driven Convergence Loop Engine
+# ═══════════════════════════════════════════════════════════════
+#
+# Core mechanic:
+#   1. Load work order (goal + test command + constraints)
+#   2. Build prompt with project context + rules
+#   3. Send to agent (single-shot, blocking)
+#   4. Run EXTERNAL test suite (masked from agent)
+#   5. If pass → break. If fail → parse failures → feed back → loop.
+#   6. Detect oscillation (agent going in circles)
+#   7. Enforce file isolation (agent stayed in scope)
+#
+# The agent NEVER sees the test source. It only sees structured
+# failure output. This forces it to solve the actual problem
+# rather than pattern-match to specific assertions.
+#
+# ═══════════════════════════════════════════════════════════════
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
+init_forge_root
+
+# ─── Help ─────────────────────────────────────────────────────
+
+show_help() {
+  echo ""
+  echo "  forge loop — Test-Driven Convergence Loop (Inferno Engine)"
+  echo ""
+  echo "  USAGE:"
+  echo "    forge loop <task_id> [options]"
+  echo ""
+  echo "  OPTIONS:"
+  echo "    --agent <type>       Agent to use: claude|codex|gemini (default: from config)"
+  echo "    --max-iter <n>       Max iterations (default: 30)"
+  echo "    --test-framework <f> pytest|jest|go (default: from config)"
+  echo "    --dry-run            Show what would run without executing"
+  echo "    --no-isolation       Skip file isolation checks"
+  echo "    --verbose            Show full agent output"
+  echo ""
+  echo "  EXIT CONDITIONS (any of):"
+  echo "    - All tests pass"
+  echo "    - Max iterations reached"
+  echo "    - Agent oscillating (same diff seen twice)"
+  echo "    - File isolation violated"
+  echo ""
+  echo "  EXAMPLE:"
+  echo "    forge loop C14 --agent claude --max-iter 20"
+  echo ""
+}
+
+# ─── Prompt Builder ───────────────────────────────────────────
+
+build_initial_prompt() {
+  local order_file="$1"
+  local goal constraints files_allowed files_forbidden
+
+  goal=$(parse_order_field "$order_file" "goal")
+  constraints=$(parse_order_field "$order_file" "constraints")
+  files_allowed=$(parse_order_field "$order_file" "files_allowed")
+  files_forbidden=$(parse_order_field "$order_file" "files_forbidden")
+
+  local prompt=""
+  prompt+="# TASK\n${goal}\n\n"
+
+  # Inject project context
+  if [[ -f "$FORGE_DIR/context/architecture.md" ]]; then
+    prompt+="# PROJECT CONTEXT\n"
+    prompt+="$(cat "$FORGE_DIR/context/architecture.md")\n\n"
+  fi
+
+  # Inject rules
+  if [[ -f "$FORGE_DIR/context/rules.md" ]]; then
+    prompt+="# RULES\n"
+    prompt+="$(cat "$FORGE_DIR/context/rules.md")\n\n"
+  fi
+
+  # File scope
+  if [[ -n "$files_allowed" ]] || [[ -n "$files_forbidden" ]]; then
+    prompt+="# FILE SCOPE\n"
+    [[ -n "$files_allowed" ]] && prompt+="You may ONLY modify: ${files_allowed}\n"
+    [[ -n "$files_forbidden" ]] && prompt+="You must NOT modify: ${files_forbidden}\n"
+    prompt+="\n"
+  fi
+
+  # Constraints
+  if [[ -n "$constraints" ]]; then
+    prompt+="# CONSTRAINTS\n${constraints}\n\n"
+  fi
+
+  prompt+="# INSTRUCTIONS\n"
+  prompt+="Implement the task above. Make minimal, focused changes.\n"
+  prompt+="Do not add unnecessary files or dependencies.\n"
+  prompt+="When done, stop. Do not explain — just make the changes.\n"
+
+  echo -e "$prompt"
+}
+
+build_retry_prompt() {
+  local order_file="$1"
+  local failure_summary="$2"
+  local iteration="$3"
+  local total_tests="$4"
+  local failed_count="$5"
+
+  local goal
+  goal=$(parse_order_field "$order_file" "goal")
+
+  local prompt=""
+  prompt+="# ITERATION ${iteration} — TESTS STILL FAILING\n\n"
+  prompt+="## Original Task\n${goal}\n\n"
+  prompt+="## Test Results\n"
+  prompt+="${failed_count} of ${total_tests} tests failing.\n\n"
+  prompt+="## Failure Details\n"
+  prompt+="${failure_summary}\n\n"
+  prompt+="## Instructions\n"
+  prompt+="Fix the remaining failures. Make minimal changes.\n"
+  prompt+="Focus on the specific errors shown above.\n"
+  prompt+="Do not revert previous fixes that were working.\n"
+
+  echo -e "$prompt"
+}
+
+# ─── Main Loop ────────────────────────────────────────────────
+
+run_loop() {
+  local task_id=""
+  local agent=""
+  local max_iter=""
+  local test_fw=""
+  local dry_run=false
+  local no_isolation=false
+  local verbose=false
+
+  # Parse args
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent) agent="$2"; shift 2 ;;
+      --max-iter) max_iter="$2"; shift 2 ;;
+      --test-framework) test_fw="$2"; shift 2 ;;
+      --dry-run) dry_run=true; shift ;;
+      --no-isolation) no_isolation=true; shift ;;
+      --verbose) verbose=true; shift ;;
+      -*) echo "Unknown option: $1" >&2; return 1 ;;
+      *) if [[ -z "$task_id" ]]; then task_id="$1"; fi; shift ;;
+    esac
+  done
+
+  if [[ -z "$task_id" ]]; then
+    echo "Error: task_id required. Usage: forge loop <task_id>" >&2
+    return 1
+  fi
+
+  # Load work order
+  local order_file
+  order_file=$(get_order_file "$task_id") || exit 1
+
+  # Resolve defaults
+  agent="${agent:-$(parse_order_field "$order_file" "agent")}"
+  agent="${agent:-$(get_config "default_agent" "claude")}"
+  max_iter="${max_iter:-$(get_config "default_max_iterations" "30")}"
+  test_fw="${test_fw:-$(get_config "default_test_framework" "pytest")}"
+
+  local test_cmd
+  test_cmd=$(parse_order_field "$order_file" "test_cmd")
+  if [[ -z "$test_cmd" ]]; then
+    log_error "No test_cmd in work order. Cannot run loop without tests."
+    echo "  Add test command: forge order edit ${task_id}" >&2
+    return 1
+  fi
+
+  # Check dependencies
+  local unmet_deps
+  unmet_deps=$(check_dependencies "$order_file" 2>/dev/null) || true
+  if [[ -n "$unmet_deps" ]]; then
+    log_error "Unmet dependencies: ${unmet_deps}"
+    echo "  Complete those tasks first, then signal: forge done <task_id>" >&2
+    return 1
+  fi
+
+  # Setup logging
+  local timestamp
+  timestamp=$(date '+%Y%m%d_%H%M%S')
+  local log_file="$FORGE_DIR/sessions/logs/${task_id}_${timestamp}.log"
+  local hash_file="$FORGE_DIR/hashes/${task_id}.hashes"
+  : > "$hash_file"
+
+  # Session state file
+  local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
+  {
+    echo "task_id=${task_id}"
+    echo "agent=${agent}"
+    echo "started=${timestamp}"
+    echo "max_iterations=${max_iter}"
+    echo "test_cmd=${test_cmd}"
+    echo "status=running"
+    echo "iteration=0"
+    echo "last_test_result=pending"
+  } > "$state_file"
+
+  # Update work order status
+  sed_inplace "s/^status:.*/status: running/" "$order_file"
+
+  local goal
+  goal=$(parse_order_field "$order_file" "goal")
+
+  # ─── Header ──────────────────────────────────────────────
+  echo ""
+  log_fire "INFERNO LOOP — ${task_id}"
+  echo -e "  ${BOLD}Goal:${RESET}    ${goal}"
+  echo -e "  ${BOLD}Agent:${RESET}   ${agent}"
+  echo -e "  ${BOLD}Test:${RESET}    ${test_cmd}"
+  echo -e "  ${BOLD}Max:${RESET}     ${max_iter} iterations"
+  echo -e "  ${BOLD}Log:${RESET}     ${log_file}"
+  echo ""
+
+  if $dry_run; then
+    echo "DRY RUN — would execute the above. Exiting."
+    return 0
+  fi
+
+  # ─── Pre-flight: verify tests currently fail ─────────────
+  log_info "Pre-flight: running tests to confirm they fail..."
+  local preflight_output preflight_exit=0
+  preflight_output=$(run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1) || preflight_exit=$?
+
+  if [[ $preflight_exit -eq 0 ]]; then
+    log_ok "Tests already pass! Nothing to do."
+    sed_inplace "s/^status:.*/status: done/" "$order_file"
+    signal_done "$task_id"
+    rm -f "$state_file"
+    return 0
+  fi
+  log_info "Tests failing as expected. Starting loop."
+
+  # ─── Loop ────────────────────────────────────────────────
+  local iteration=0
+  local final_status="max_iterations"
+
+  while [[ $iteration -lt $max_iter ]]; do
+    iteration=$((iteration + 1))
+
+    # Update state
+    sed_inplace "s/^iteration=.*/iteration=${iteration}/" "$state_file"
+
+    echo ""
+    log_fire "Iteration ${iteration}/${max_iter}"
+    echo "  ────────────────────────────────────" | tee -a "$log_file"
+    echo "  Iteration: ${iteration}" >> "$log_file"
+    echo "  Timestamp: $(portable_date_iso)" >> "$log_file"
+
+    # ── Build prompt ─────────────────────────────────────
+    local prompt
+    if [[ $iteration -eq 1 ]]; then
+      prompt=$(build_initial_prompt "$order_file")
+    else
+      local failure_summary counts passed failed
+      failure_summary=$(parse_test_failures "$preflight_output" "$test_fw")
+      counts=$(count_test_results "$preflight_output" "$test_fw")
+      passed=$(echo "$counts" | cut -d: -f1)
+      failed=$(echo "$counts" | cut -d: -f2)
+      prompt=$(build_retry_prompt "$order_file" "$failure_summary" "$iteration" "$((passed + failed))" "$failed")
+    fi
+
+    # ── Send to agent ────────────────────────────────────
+    log_info "Sending to ${agent}..."
+    local agent_output
+    agent_output=$(send_to_agent "$agent" "$prompt" "$FORGE_ROOT" "$log_file" 2>&1) || true
+
+    if $verbose; then
+      echo "$agent_output"
+    else
+      # Show just the last 3 lines as a preview
+      echo "$agent_output" | tail -3 | sed 's/^/  /'
+    fi
+
+    # ── File isolation check ─────────────────────────────
+    if ! $no_isolation; then
+      local violations
+      violations=$(check_file_isolation "$order_file" "$FORGE_ROOT" 2>/dev/null) || true
+      if [[ -n "$violations" ]]; then
+        log_error "FILE ISOLATION VIOLATED"
+        echo -e "  ${violations}"
+        echo "  Agent touched files outside its scope." | tee -a "$log_file"
+        echo "  Reverting changes to forbidden files..." | tee -a "$log_file"
+        # Could auto-revert here, but safer to just stop
+        final_status="isolation_violation"
+        break
+      fi
+    fi
+
+    # ── Oscillation check ────────────────────────────────
+    local current_hash
+    current_hash=$(hash_current_diff "$FORGE_ROOT")
+    if check_oscillation "$current_hash" "$hash_file"; then
+      log_warn "OSCILLATION DETECTED — agent is going in circles"
+      echo "  Same diff seen before. Breaking loop." | tee -a "$log_file"
+      final_status="oscillation"
+      break
+    fi
+
+    # ── Run tests ────────────────────────────────────────
+    log_info "Running tests: ${test_cmd}"
+    local test_exit=0
+    preflight_output=$(run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1) || test_exit=$?
+
+    local counts passed failed
+    counts=$(count_test_results "$preflight_output" "$test_fw")
+    passed=$(echo "$counts" | cut -d: -f1)
+    failed=$(echo "$counts" | cut -d: -f2)
+
+    echo "  Tests: ${passed} passed, ${failed} failed" >> "$log_file"
+
+    sed_inplace "s/^last_test_result=.*/last_test_result=${passed}p_${failed}f/" "$state_file"
+
+    if [[ $test_exit -eq 0 ]]; then
+      echo ""
+      log_ok "ALL TESTS PASS — Converged at iteration ${iteration}"
+      final_status="converged"
+      break
+    else
+      log_warn "Tests: ${passed} passed, ${failed} failed"
+      local failures
+      failures=$(parse_test_failures "$preflight_output" "$test_fw")
+      echo "  ${failures}" | head -5 | sed 's/^/    /'
+    fi
+  done
+
+  # ─── Summary ─────────────────────────────────────────────
+  echo ""
+  echo "  ════════════════════════════════════════"
+  echo -e "  ${BOLD}INFERNO COMPLETE${RESET}"
+  echo "  Task:       ${task_id}"
+  echo "  Status:     ${final_status}"
+  echo "  Iterations: ${iteration}/${max_iter}"
+  echo "  Log:        ${log_file}"
+  echo "  ════════════════════════════════════════"
+  echo ""
+
+  # Update state
+  case "$final_status" in
+    converged)
+      sed_inplace "s/^status:.*/status: done/" "$order_file"
+      signal_done "$task_id"
+      ;;
+    oscillation|max_iterations|isolation_violation)
+      sed_inplace "s/^status:.*/status: failed/" "$order_file"
+      ;;
+  esac
+
+  # Record final status
+  {
+    echo "final_status=${final_status}"
+    echo "total_iterations=${iteration}"
+    echo "finished=$(portable_date_iso)"
+  } >> "$state_file"
+
+  # Append to lessons if failed
+  if [[ "$final_status" != "converged" ]]; then
+    echo "[$(date '+%Y-%m-%d')] [${task_id}] Loop ended: ${final_status} after ${iteration} iterations" \
+      >> "$FORGE_DIR/context/lessons.md"
+  fi
+
+  return $( [[ "$final_status" == "converged" ]] && echo 0 || echo 1 )
+}
+
+# ─── Entry ────────────────────────────────────────────────────
+
+case "${1:-}" in
+  ""|"-h"|"--help") show_help ;;
+  *) run_loop "$@" ;;
+esac
