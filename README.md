@@ -2,7 +2,7 @@
 
 Multi-agent terminal orchestration with test-driven convergence loops.
 
-Agents never see the tests — only structured failure output. The only way to pass is to solve the actual problem.
+**Forge** is the CLI engine at the core of Dante. Agents never see the tests — only structured failure output. The only way to pass is to solve the actual problem.
 
 ## How It Works
 
