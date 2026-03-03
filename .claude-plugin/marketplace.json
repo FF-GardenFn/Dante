@@ -1,0 +1,25 @@
+{
+  "name": "dante",
+  "owner": {
+    "name": "Faycal Farhat",
+    "email": "faycal.farhat@mail.mcgill.ca"
+  },
+  "metadata": {
+    "description": "Multi-agent terminal orchestration with test-driven convergence loops"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": "./.claude/forge",
+      "description": "Orchestrate Forge convergence loops — decompose goals, design Goodhart-resistant tests, launch loops, review results",
+      "version": "0.1.0",
+      "author": {
+        "name": "Faycal Farhat"
+      },
+      "repository": "https://github.com/FF-GardenFn/Dante",
+      "license": "MIT",
+      "keywords": ["multi-agent", "orchestration", "convergence", "test-driven"],
+      "category": "development"
+    }
+  ]
+}

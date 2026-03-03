@@ -53,7 +53,14 @@ forge status              # dashboard
 
 ## Claude Code Plugin
 
-The `.claude/forge/` directory provides a Claude Code plugin with slash commands:
+Install the Forge plugin from the Dante marketplace:
+
+```bash
+/plugin marketplace add FF-GardenFn/Dante
+/plugin install forge@dante
+```
+
+Or use it directly — the `.claude/forge/` directory provides slash commands:
 
 | Command | Purpose |
 |---------|---------|
