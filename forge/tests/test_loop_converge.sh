@@ -9,6 +9,7 @@ trap "rm -rf '$TMP'" EXIT
 
 cd "$TMP"
 git init -q .
+git config user.email "test@test.com" && git config user.name "Test"
 bash "$FORGE_BIN" init 2>&1 >/dev/null
 
 # Create a file the agent needs to fix

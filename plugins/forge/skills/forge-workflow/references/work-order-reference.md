@@ -28,7 +28,7 @@
 
 ## test_cmd Constraints
 
-`validate_test_cmd()` rejects commands containing: `;`, backtick, `$`, `|`, `&`, `<`, `>`, or `$()`.
+`validate_test_cmd()` uses an allowlist: only letters, digits, spaces, `_`, `.`, `/`, `:`, `=`, `@`, and `-` are permitted. All other characters are rejected. Wrap complex commands in a script.
 
 **Valid:**
 ```

@@ -18,8 +18,7 @@ cat "$order_file"
 echo ""
 
 echo -e "${BOLD}Git Diff Summary:${RESET}"
-cd "$FORGE_ROOT"
-git diff --stat 2>/dev/null || echo "  (not a git repo or no changes)"
+(cd "$FORGE_ROOT" && git diff --stat 2>/dev/null) || echo "  (not a git repo or no changes)"
 echo ""
 
 echo -e "${BOLD}File Isolation:${RESET}"
@@ -36,7 +35,14 @@ echo -e "${BOLD}Test Results:${RESET}"
 test_cmd=$(parse_order_field "$order_file" "test_cmd")
 if [[ -n "$test_cmd" ]]; then
   echo "  Running: $test_cmd"
-  run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1 | tail -10 | sed "s/^/  /"
+  test_output="" test_exit=0
+  test_output=$(run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1) || test_exit=$?
+  echo "$test_output" | tail -10 | sed "s/^/  /"
+  if [[ $test_exit -eq 0 ]]; then
+    echo -e "  ${GREEN}All tests pass.${RESET}"
+  else
+    echo -e "  ${YELLOW}Tests failing (exit code ${test_exit}).${RESET}"
+  fi
 else
   echo "  No test command defined."
 fi

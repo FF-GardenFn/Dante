@@ -6,13 +6,13 @@ TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 FORGE_DIR="$TESTS_DIR/.."
 source "$FORGE_DIR/lib/common.sh" 2>/dev/null || { echo "SKIP: cannot source common.sh"; exit 0; }
 
-# --- portable_md5 ---
-hash1=$(echo "hello" | portable_md5)
-hash2=$(echo "hello" | portable_md5)
-hash3=$(echo "world" | portable_md5)
-[[ -n "$hash1" ]] || { echo "FAIL: portable_md5 returned empty"; exit 1; }
-[[ "$hash1" == "$hash2" ]] || { echo "FAIL: portable_md5 not deterministic"; exit 1; }
-[[ "$hash1" != "$hash3" ]] || { echo "FAIL: portable_md5 collision"; exit 1; }
+# --- portable_hash ---
+hash1=$(echo "hello" | portable_hash)
+hash2=$(echo "hello" | portable_hash)
+hash3=$(echo "world" | portable_hash)
+[[ -n "$hash1" ]] || { echo "FAIL: portable_hash returned empty"; exit 1; }
+[[ "$hash1" == "$hash2" ]] || { echo "FAIL: portable_hash not deterministic"; exit 1; }
+[[ "$hash1" != "$hash3" ]] || { echo "FAIL: portable_hash collision"; exit 1; }
 
 # --- portable_date_iso ---
 ts=$(portable_date_iso)

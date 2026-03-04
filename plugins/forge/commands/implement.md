@@ -105,12 +105,12 @@ forge order create <ID> \
 
 For foreground execution:
 ```bash
-forge loop <ID> --agent claude --max-iter 20
+forge loop <ID> --agent claude --max-iter 30
 ```
 
 For background tmux:
 ```bash
-forge session launch <ID> --agent claude --max-iter 20 --detach
+forge session launch <ID> --agent claude --max-iter 30 --detach
 ```
 
 Report monitoring options:
@@ -127,7 +127,11 @@ Four possible outcomes:
 3. **Oscillation** -- agent producing same diff repeatedly. Rewrite goal to be more specific, or redesign tests via `/forge:test`.
 4. **File isolation violated** -- agent touched forbidden files. Adjust `files_allowed` and re-launch.
 
-**On failure, do NOT ask the user what to do.** Diagnose from the logs (`forge log <id>`), then act:
+**On failure, do NOT ask the user what to do.**
+
+First, verify the working directory is clean or recoverable via `git status` and `git diff --stat`. If files outside `files_allowed` were touched, revert with `git checkout -- .` before retrying.
+
+Diagnose from the logs (`forge log <id>`), then act:
 
 - Read the session log to identify the failure pattern
 - Apply the appropriate fix from above
@@ -137,5 +141,5 @@ Only escalate to the user after **two different approaches** have failed.
 
 After any outcome (success or failure), append 2-3 sentences to `.forge/context/lessons.md`:
 ```
-[DATE] [TASK_ID] What happened and what to remember next time.
+[YYYY-MM-DD] [TASK_ID] What happened and what to remember next time.
 ```

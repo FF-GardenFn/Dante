@@ -18,11 +18,11 @@ for f in "$FORGE_DIR/sessions/active"/*.state; do
   has_active=true
   # Atomic read: snapshot file to avoid mid-write corruption
   snapshot=$(cat "$f" 2>/dev/null) || continue
-  tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2)
-  agent=$(echo "$snapshot" | grep "^agent=" | cut -d= -f2)
-  iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2)
-  max=$(echo "$snapshot" | grep "^max_iterations=" | cut -d= -f2)
-  test_res=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2)
+  tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2 || echo "?")
+  agent=$(echo "$snapshot" | grep "^agent=" | cut -d= -f2 || echo "?")
+  iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2 || echo "?")
+  max=$(echo "$snapshot" | grep "^max_iterations=" | cut -d= -f2 || echo "?")
+  test_res=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2 || echo "?")
   pct=0
   if [[ -n "$max" ]] && [[ "$max" != "0" ]]; then
     pct=$((iter * 100 / max))
@@ -50,7 +50,8 @@ done
 
 echo ""
 echo "  Open: $co  Running: $cr  Done: $cd_  Failed: $cf"
-tc=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -c "^forge-" || echo "0")
+tc=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" | wc -l | tr -d ' ' || true)
+tc="${tc:-0}"
 mp=$(get_config "max_parallel_agents" "3")
 echo "  Tmux: $tc/$mp (WIP limit)"
 echo ""

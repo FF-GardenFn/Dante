@@ -27,15 +27,26 @@ sed_inplace() {
   fi
 }
 
-portable_md5() {
-  if command -v md5sum >/dev/null 2>&1; then
+validate_task_id() {
+  local task_id="$1"
+  if [[ ! "$task_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo -e "${RED}Error: task_id '${task_id}' contains invalid characters. Use [A-Za-z0-9_-] only.${RESET}" >&2
+    return 1
+  fi
+}
+
+portable_hash() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  elif command -v md5sum >/dev/null 2>&1; then
     md5sum | cut -d' ' -f1
   elif command -v md5 >/dev/null 2>&1; then
     md5 -r | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum | cut -d' ' -f1
   else
-    cksum | cut -d' ' -f1
+    echo "Error: no hash utility found (need sha256sum, shasum, or md5sum)" >&2
+    return 1
   fi
 }
 
@@ -72,9 +83,13 @@ get_config() {
   local key="$1"
   local default="${2:-}"
   local config_file="$FORGE_DIR/config"
+  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "$default"
+    return
+  fi
   if [[ -f "$config_file" ]]; then
     local val
-    val=$(grep "^${key}=" "$config_file" 2>/dev/null | head -1 | cut -d'=' -f2-)
+    val=$(grep -F "${key}=" "$config_file" 2>/dev/null | head -1 | cut -d'=' -f2- | head -1)
     if [[ -n "$val" ]]; then
       echo "$val"
       return
@@ -87,10 +102,16 @@ set_config() {
   local key="$1"
   local value="$2"
   local config_file="$FORGE_DIR/config"
-  if grep -q "^${key}=" "$config_file" 2>/dev/null; then
-    sed_inplace "s|^${key}=.*|${key}=${value}|" "$config_file"
+  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "set_config: invalid key: ${key}" >&2
+    return 1
+  fi
+  local escaped_value
+  escaped_value=$(printf '%s\n' "$value" | sed 's/[|&\\]/\\&/g')
+  if grep -qF "${key}=" "$config_file" 2>/dev/null; then
+    sed_inplace "s|^${key}=.*|${key}=${escaped_value}|" "$config_file"
   else
-    echo "${key}=${value}" >> "$config_file"
+    printf '%s=%s\n' "$key" "$value" >> "$config_file"
   fi
 }
 
@@ -99,8 +120,10 @@ parse_order_field() {
   local order_file="$1"
   local field="$2"
   [[ -z "$field" ]] && return 1
-  # Handle YAML delimiters with optional trailing whitespace
-  sed -n '/^---[[:space:]]*$/,/^---[[:space:]]*$/p' "$order_file" | \
+  if [[ ! "$field" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    return 1
+  fi
+  awk '/^---[[:space:]]*$/{count++; if(count==2) exit; next} count==1' "$order_file" | \
     grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//"
 }
 
@@ -112,6 +135,7 @@ parse_order_list_field() {
 
 get_order_file() {
   local task_id="$1"
+  validate_task_id "$task_id" || return 1
   local order_file="$FORGE_DIR/work_orders/${task_id}.md"
   if [[ ! -f "$order_file" ]]; then
     echo -e "${RED}Error: Work order '${task_id}' not found.${RESET}" >&2
@@ -130,17 +154,19 @@ send_to_agent() {
 
   case "$agent_type" in
     claude)
-      cd "$project_dir"
-      # No Bash tool — agents must use Edit/Write/Read to respect file isolation
-      claude -p "$prompt" --output-format text --allowedTools Edit,Write,Read,Glob,Grep 2>&1 | tee -a "$log_file"
+      (
+        cd "$project_dir" || return 1
+        claude -p "$prompt" --output-format text \
+          --allowedTools Edit,Write,Read,Glob,Grep 2>&1 | tee -a "$log_file"
+      )
       ;;
     codex)
-      cd "$project_dir"
-      codex "$prompt" 2>&1 | tee -a "$log_file"
+      log_warn "codex adapter has no tool restriction. Run only in a sandbox."
+      ( cd "$project_dir" || return 1; codex "$prompt" 2>&1 | tee -a "$log_file" )
       ;;
     gemini)
-      cd "$project_dir"
-      gemini "$prompt" 2>&1 | tee -a "$log_file"
+      log_warn "gemini adapter has no tool restriction. Run only in a sandbox."
+      ( cd "$project_dir" || return 1; gemini "$prompt" 2>&1 | tee -a "$log_file" )
       ;;
     *)
       echo -e "${RED}Unknown agent type: ${agent_type}${RESET}" >&2
@@ -153,18 +179,18 @@ send_to_agent() {
 
 validate_test_cmd() {
   local cmd="$1"
-  # Reject control characters (newline injection bypass)
-  if [[ "$cmd" == *$'\n'* ]] || [[ "$cmd" == *$'\r'* ]]; then
-    echo -e "${RED}Error: test_cmd contains control characters${RESET}" >&2
+  if [[ -z "$cmd" ]]; then
+    echo -e "${RED}Error: test_cmd is empty${RESET}" >&2
     return 1
   fi
-  # Reject shell metacharacters using explicit string matching (not regex)
-  if [[ "$cmd" == *";"* ]] || [[ "$cmd" == *"|"* ]] || [[ "$cmd" == *"&"* ]] || \
-     [[ "$cmd" == *"<"* ]] || [[ "$cmd" == *">"* ]] || [[ "$cmd" == *'`'* ]] || \
-     [[ "$cmd" == *'$('* ]] || [[ "$cmd" == *'${'* ]]; then
+  if [[ "$cmd" =~ [^[:print:]\ ] ]]; then
+    echo -e "${RED}Error: test_cmd contains non-printable characters${RESET}" >&2
+    return 1
+  fi
+  if [[ "$cmd" =~ [^a-zA-Z0-9\ _./:=@-] ]]; then
     echo -e "${RED}Error: test_cmd contains unsafe characters: ${cmd}${RESET}" >&2
-    echo "  Test commands must not contain shell metacharacters." >&2
-    echo "  Wrap complex commands in a script and reference the script path." >&2
+    echo "  Permitted: letters, digits, space, _ . / : = @ -" >&2
+    echo "  Wrap complex commands in a script." >&2
     return 1
   fi
   return 0
@@ -173,31 +199,29 @@ validate_test_cmd() {
 run_test_suite() {
   local test_cmd="$1"
   local project_dir="$2"
-  local raw_output
-  local exit_code=0
 
   validate_test_cmd "$test_cmd" || return 1
 
-  cd "$project_dir"
-  # Use argv array instead of eval to prevent shell re-parsing injection
-  local -a argv
-  read -r -a argv <<< "$test_cmd"
-  raw_output=$("${argv[@]}" 2>&1) || exit_code=$?
-
-  echo "$raw_output"
-  return "$exit_code"
+  (
+    cd "$project_dir" || exit 1
+    local -a argv
+    read -r -a argv <<< "$test_cmd"
+    "${argv[@]}" 2>&1
+  )
 }
 
 parse_test_failures() {
   local raw_output="$1"
   local test_framework="${2:-pytest}"
 
-  # Redact details that could enable Goodhart bypass via error text
   local redacted
   redacted=$(echo "$raw_output" | \
     sed -E 's|(/[^ ]*/)*([^ /]+\.(py|js|ts|go)):[0-9]+|[TEST]|g' | \
     sed -E 's/(AssertionError|ValueError|TypeError|KeyError|RuntimeError): .*/assertion failed/' | \
+    sed -E 's/^E[[:space:]]+assert .*/E       assertion failed/' | \
+    sed -E 's/^E[[:space:]]+where .*/E       [context redacted]/' | \
     sed -E 's/assert .+ == .+/assertion failed/' | \
+    sed -E 's/(Expected|Received|got|want):[[:space:]].*/\1: [redacted]/' | \
     sed -E 's/expected .* got .*/value mismatch/' \
   )
 
@@ -248,22 +272,24 @@ count_test_results() {
 
 hash_current_diff() {
   local project_dir="$1"
-  cd "$project_dir" || return 1
-  {
-    git diff 2>/dev/null || true
-    # Hash untracked text files under 500KB, skip binaries
-    while IFS= read -r f; do
-      [[ -f "$f" ]] || continue
-      local fsize
-      fsize=$(wc -c < "$f" 2>/dev/null || echo 999999)
-      fsize="${fsize// /}"
-      if [[ $fsize -lt 500000 ]]; then
-        cat "$f" 2>/dev/null || true
-      else
-        echo "SKIP:$f"
-      fi
-    done < <(git ls-files -o --exclude-standard 2>/dev/null)
-  } | portable_md5
+  (
+    cd "$project_dir" || exit 1
+    {
+      git diff 2>/dev/null || true
+      while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        [[ -L "$f" ]] && continue
+        local fsize
+        fsize=$(wc -c < "$f" 2>/dev/null || echo 999999)
+        fsize="${fsize// /}"
+        if [[ $fsize -lt 500000 ]]; then
+          cat "$f" 2>/dev/null || true
+        else
+          echo "SKIP:$f"
+        fi
+      done < <(git ls-files -o --exclude-standard 2>/dev/null)
+    } | portable_hash
+  )
 }
 
 check_oscillation() {
@@ -352,6 +378,16 @@ signal_done() {
   log_ok "Task ${task_id} signaled DONE"
 }
 
+update_order_field() {
+  local order_file="$1"
+  local pattern="$2"
+  local replacement="$3"
+  local tmp
+  tmp=$(mktemp "${order_file}.XXXXXX")
+  sed "s/${pattern}/${replacement}/" "$order_file" > "$tmp"
+  mv "$tmp" "$order_file"
+}
+
 is_task_done() {
   local task_id="$1"
   [[ -f "$FORGE_DIR/signals/${task_id}.done" ]]
@@ -367,10 +403,9 @@ check_dependencies() {
 
   local all_met=true
   local unmet=""
-  for dep in $(echo "$deps" | tr ',' ' '); do
+  while IFS= read -r dep; do
     dep=$(echo "$dep" | xargs)
     [[ -z "$dep" ]] && continue
-    # Validate dependency exists as a work order
     if [[ ! -f "$FORGE_DIR/work_orders/${dep}.md" ]]; then
       echo "Unknown dependency: ${dep}" >&2
       return 2
@@ -379,7 +414,7 @@ check_dependencies() {
       unmet="${unmet}${dep} "
       all_met=false
     fi
-  done
+  done < <(echo "$deps" | tr ',' '\n')
 
   if $all_met; then
     return 0
@@ -404,9 +439,9 @@ check_file_isolation() {
     return 0
   fi
 
-  cd "$project_dir"
   local changed_files
   changed_files=$(
+    cd "$project_dir" || exit 1
     {
       git diff --name-only 2>/dev/null
       git ls-files -o --exclude-standard 2>/dev/null
@@ -419,13 +454,19 @@ check_file_isolation() {
 
   local violations=""
 
-  # Patterns are ERE regex. Trim whitespace from comma-separated entries.
   if [[ -n "$forbidden" ]]; then
     while IFS=',' read -r pattern; do
       pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       [[ -z "$pattern" ]] && continue
       local matches
-      matches=$(echo "$changed_files" | grep -E "$pattern" || true)
+      matches=$(echo "$changed_files" | grep -E "^${pattern}" 2>/dev/null) || {
+        local grep_exit=$?
+        if [[ $grep_exit -eq 2 ]]; then
+          echo "Invalid pattern in files_forbidden: ${pattern}" >&2
+          return 1
+        fi
+        continue
+      }
       if [[ -n "$matches" ]]; then
         violations="${violations}FORBIDDEN: ${matches}\n"
       fi
@@ -438,7 +479,7 @@ check_file_isolation() {
       while IFS=',' read -r pattern; do
         pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ -z "$pattern" ]] && continue
-        if echo "$file" | grep -qE "$pattern"; then
+        if echo "$file" | grep -qE "^${pattern}" 2>/dev/null; then
           is_allowed=true
           break
         fi

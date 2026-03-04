@@ -5,6 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || re
 source "$(dirname "$SCRIPT_DIR")/lib/common.sh"
 init_forge_root
 
+require_tmux() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "Error: tmux is required but not installed." >&2
+    echo "  Install: brew install tmux (macOS) or apt install tmux (Linux)" >&2
+    return 1
+  fi
+}
+
 show_help() {
   echo "  forge session — Tmux Session Manager"
   echo "    launch <task_id> [opts]   Launch agent in tmux with loop"
@@ -27,9 +35,10 @@ session_launch() {
     esac
   done
   [[ -z "$task_id" ]] && { echo "Error: task_id required." >&2; return 1; }
-  get_order_file "$task_id" > /dev/null || exit 1
+  validate_task_id "$task_id" || return 1
+  require_tmux || return 1
+  get_order_file "$task_id" > /dev/null || return 1
 
-  # WIP limit — check BEFORE claiming to avoid orphaned state files
   local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
   if [[ -f "$state_file" ]]; then
     log_warn "Task ${task_id} already has an active session."
@@ -44,77 +53,103 @@ session_launch() {
     return 1
   fi
 
-  # Atomic create via noclobber
   if ! (set -C; echo "task_id=${task_id}" > "$state_file") 2>/dev/null; then
     log_warn "Task ${task_id} claimed by another process."
     return 1
   fi
 
-  local loop_cmd="$SCRIPT_DIR/forge-loop ${task_id}"
-  [[ -n "$agent" ]] && loop_cmd+=" --agent ${agent}"
-  [[ -n "$max_iter" ]] && loop_cmd+=" --max-iter ${max_iter}"
+  local -a loop_cmd=("$SCRIPT_DIR/forge-loop" "$task_id")
+  [[ -n "$agent" ]] && loop_cmd+=(--agent "$agent")
+  [[ -n "$max_iter" ]] && loop_cmd+=(--max-iter "$max_iter")
 
-  local sn; sn=$(get_session_name "$task_id" "${agent:-agent}")
+  local sn
+  sn=$(get_session_name "$task_id" "${agent:-agent}")
   if tmux has-session -t "$sn" 2>/dev/null; then
+    rm -f "$state_file"
     log_warn "Session '${sn}' exists. Kill or attach."
     return 1
   fi
 
-  tmux new-session -d -s "$sn" -c "$FORGE_ROOT" \
-    "bash -c '${loop_cmd}; echo Done. Press enter.; read'"
+  if ! tmux new-session -d -s "$sn" -c "$FORGE_ROOT" "${loop_cmd[@]}"; then
+    rm -f "$state_file"
+    log_error "tmux new-session failed for ${sn}"
+    return 1
+  fi
   log_ok "Launched: ${sn}"
   if ! $detach; then tmux attach-session -t "$sn"; fi
 }
 
 session_attach() {
   local tid="${1:?task_id required}"
-  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
+  validate_task_id "$tid" || return 1
+  require_tmux || return 1
+  local m
+  m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-${tid}-" | head -1)
   [[ -z "$m" ]] && { echo "No session for ${tid}"; return 1; }
   tmux attach-session -t "$m"
 }
 
 session_kill() {
   local tid="${1:?task_id required}"
-  # Remove state file FIRST to prevent new launches from being orphaned
+  validate_task_id "$tid" || return 1
+  local m
+  m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-${tid}-" | head -1)
+  if [[ -n "$m" ]]; then
+    tmux kill-session -t "$m" 2>/dev/null
+    log_ok "Killed: ${m}"
+  fi
   rm -f "$FORGE_DIR/sessions/active/${tid}.state"
-  local m; m=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "forge-${tid}" | head -1)
-  [[ -z "$m" ]] && { log_ok "Session cleaned for ${tid}"; return 0; }
-  tmux kill-session -t "$m"
-  log_ok "Killed: ${m}"
+  log_ok "Session cleaned for ${tid}"
 }
 
 session_list() {
   echo "  Active Forge Sessions:"
-  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" || echo "    (none)"
+  if command -v tmux >/dev/null 2>&1; then
+    tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" || echo "    (none)"
+  else
+    echo "    (tmux not installed)"
+  fi
   echo ""
   echo "  State Files:"
+  local found=false
   for f in "$FORGE_DIR/sessions/active"/*.state; do
-    [[ -f "$f" ]] || { echo "    (none)"; break; }
-    # Atomic read: snapshot file to avoid mid-write corruption
+    [[ -f "$f" ]] || continue
+    found=true
     local snapshot
     snapshot=$(cat "$f" 2>/dev/null) || continue
     local tid iter st
-    tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2)
-    iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2)
-    st=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2)
+    tid=$(echo "$snapshot" | grep "^task_id=" | cut -d= -f2 || echo "?")
+    iter=$(echo "$snapshot" | grep "^iteration=" | cut -d= -f2 || echo "?")
+    st=$(echo "$snapshot" | grep "^last_test_result=" | cut -d= -f2 || echo "?")
     echo "    ${tid}: iter ${iter}, tests: ${st}"
   done
+  if ! $found; then echo "    (none)"; fi
 }
 
 session_killall() {
-  # Remove state files FIRST to prevent races with new launches
-  rm -f "$FORGE_DIR/sessions/active"/*.state
-  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" | while read -r s; do
-    tmux kill-session -t "$s" 2>/dev/null; echo "  Killed: $s"
-  done
+  local sessions
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-" || true)
+  if [[ -n "$sessions" ]]; then
+    while IFS= read -r s; do
+      tmux kill-session -t "$s" 2>/dev/null
+      echo "  Killed: $s"
+    done <<< "$sessions"
+  fi
+  rm -f "$FORGE_DIR/sessions/active"/*.state 2>/dev/null || true
+  log_ok "All sessions cleaned."
 }
 
 session_workspace() {
+  require_tmux || return 1
   local ws="forge-workspace"
   if tmux has-session -t "$ws" 2>/dev/null; then
     tmux attach-session -t "$ws"; return
   fi
-  tmux new-session -d -s "$ws" -c "$FORGE_ROOT" "watch -n5 $SCRIPT_DIR/forge-status"
+  if command -v watch >/dev/null 2>&1; then
+    tmux new-session -d -s "$ws" -c "$FORGE_ROOT" "watch -n5 '${SCRIPT_DIR}/forge-status'"
+  else
+    tmux new-session -d -s "$ws" -c "$FORGE_ROOT" "while true; do clear; '${SCRIPT_DIR}/forge-status'; sleep 5; done"
+  fi
   tmux split-window -v -t "$ws" -c "$FORGE_ROOT" -p 30
   tmux select-pane -t "$ws:0.0"
   tmux split-window -h -t "$ws" -c "$FORGE_ROOT"

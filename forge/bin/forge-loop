@@ -63,39 +63,59 @@ build_initial_prompt() {
   files_forbidden=$(parse_order_field "$order_file" "files_forbidden")
 
   local prompt=""
-  prompt+="# TASK\n${goal}\n\n"
+  prompt+="# TASK
+${goal}
+
+"
 
   # Inject project context
   if [[ -f "$FORGE_DIR/context/architecture.md" ]]; then
-    prompt+="# PROJECT CONTEXT\n"
-    prompt+="$(cat "$FORGE_DIR/context/architecture.md")\n\n"
+    prompt+="# PROJECT CONTEXT
+"
+    prompt+="$(cat "$FORGE_DIR/context/architecture.md")
+
+"
   fi
 
   # Inject rules
   if [[ -f "$FORGE_DIR/context/rules.md" ]]; then
-    prompt+="# RULES\n"
-    prompt+="$(cat "$FORGE_DIR/context/rules.md")\n\n"
+    prompt+="# RULES
+"
+    prompt+="$(cat "$FORGE_DIR/context/rules.md")
+
+"
   fi
 
   # File scope
   if [[ -n "$files_allowed" ]] || [[ -n "$files_forbidden" ]]; then
-    prompt+="# FILE SCOPE\n"
-    [[ -n "$files_allowed" ]] && prompt+="You may ONLY modify: ${files_allowed}\n"
-    [[ -n "$files_forbidden" ]] && prompt+="You must NOT modify: ${files_forbidden}\n"
-    prompt+="\n"
+    prompt+="# FILE SCOPE
+"
+    [[ -n "$files_allowed" ]] && prompt+="You may ONLY modify: ${files_allowed}
+"
+    [[ -n "$files_forbidden" ]] && prompt+="You must NOT modify: ${files_forbidden}
+"
+    prompt+="
+"
   fi
 
   # Constraints
   if [[ -n "$constraints" ]]; then
-    prompt+="# CONSTRAINTS\n${constraints}\n\n"
+    prompt+="# CONSTRAINTS
+${constraints}
+
+"
   fi
 
-  prompt+="# INSTRUCTIONS\n"
-  prompt+="Implement the task above. Make minimal, focused changes.\n"
-  prompt+="Do not add unnecessary files or dependencies.\n"
-  prompt+="When done, stop. Do not explain — just make the changes.\n"
+  prompt+="# INSTRUCTIONS
+"
+  prompt+="Implement the task above. Make minimal, focused changes.
+"
+  prompt+="Do not add unnecessary files or dependencies.
+"
+  prompt+="When done, stop. Do not explain — just make the changes.
+"
 
-  echo -e "$prompt"
+  printf '%s\n' "$prompt"
 }
 
 build_retry_prompt() {
@@ -108,19 +128,37 @@ build_retry_prompt() {
   local goal
   goal=$(parse_order_field "$order_file" "goal")
 
-  local prompt=""
-  prompt+="# ITERATION ${iteration} — TESTS STILL FAILING\n\n"
-  prompt+="## Original Task\n${goal}\n\n"
-  prompt+="## Test Results\n"
-  prompt+="${failed_count} of ${total_tests} tests failing.\n\n"
-  prompt+="## Failure Details\n"
-  prompt+="${failure_summary}\n\n"
-  prompt+="## Instructions\n"
-  prompt+="Fix the remaining failures. Make minimal changes.\n"
-  prompt+="Focus on the specific errors shown above.\n"
-  prompt+="Do not revert previous fixes that were working.\n"
+  local safe_summary
+  safe_summary=$(echo "$failure_summary" | grep -v '^#' | head -20)
 
-  echo -e "$prompt"
+  local prompt=""
+  prompt+="# ITERATION ${iteration} — TESTS STILL FAILING
+
+"
+  prompt+="## Original Task
+${goal}
+
+"
+  prompt+="## Test Results
+"
+  prompt+="${failed_count} of ${total_tests} tests failing.
+
+"
+  prompt+="## Failure Details
+"
+  prompt+="${safe_summary}
+
+"
+  prompt+="## Instructions
+"
+  prompt+="Fix the remaining failures. Make minimal changes.
+"
+  prompt+="Focus on the specific errors shown above.
+"
+  prompt+="Do not revert previous fixes that were working.
+"
+
+  printf '%s\n' "$prompt"
 }
 
 # ─── Main Loop ────────────────────────────────────────────────
@@ -155,12 +193,16 @@ run_loop() {
 
   # Load work order
   local order_file
-  order_file=$(get_order_file "$task_id") || exit 1
+  order_file=$(get_order_file "$task_id") || return 1
 
   # Resolve defaults
   agent="${agent:-$(parse_order_field "$order_file" "agent")}"
   agent="${agent:-$(get_config "default_agent" "claude")}"
   max_iter="${max_iter:-$(get_config "default_max_iterations" "30")}"
+  if ! [[ "$max_iter" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "max_iter must be a positive integer, got: '${max_iter}'"
+    return 1
+  fi
   test_fw="${test_fw:-$(get_config "default_test_framework" "pytest")}"
 
   local test_cmd
@@ -172,9 +214,15 @@ run_loop() {
   fi
 
   # Check dependencies
+  local dep_exit=0
   local unmet_deps
-  unmet_deps=$(check_dependencies "$order_file" 2>/dev/null) || true
-  if [[ -n "$unmet_deps" ]]; then
+  unmet_deps=$(check_dependencies "$order_file" 2>&1) || dep_exit=$?
+  if [[ $dep_exit -eq 2 ]]; then
+    log_error "Work order references unknown dependencies. Aborting."
+    echo "  $unmet_deps" >&2
+    return 1
+  fi
+  if [[ $dep_exit -eq 1 ]] && [[ -n "$unmet_deps" ]]; then
     log_error "Unmet dependencies: ${unmet_deps}"
     echo "  Complete those tasks first, then signal: forge done <task_id>" >&2
     return 1
@@ -201,8 +249,13 @@ run_loop() {
   } > "${state_file}.tmp"
   mv "${state_file}.tmp" "$state_file"
 
-  # Update work order status
-  sed_inplace "s/^status:.*/status: running/" "$order_file"
+  _loop_cleanup() {
+    if [[ -f "$state_file" ]] && ! grep -q "^final_status=" "$state_file" 2>/dev/null; then
+      rm -f "$state_file"
+    fi
+    rm -f "$hash_file" "${hash_file}.lock"
+  }
+  trap '_loop_cleanup' EXIT INT TERM
 
   local goal
   goal=$(parse_order_field "$order_file" "goal")
@@ -216,6 +269,10 @@ run_loop() {
   echo -e "  ${BOLD}Max:${RESET}     ${max_iter} iterations"
   echo -e "  ${BOLD}Log:${RESET}     ${log_file}"
   echo ""
+
+  if $no_isolation; then
+    log_warn "File isolation checks DISABLED (--no-isolation)"
+  fi
 
   if $dry_run; then
     echo "DRY RUN — would execute the above. Exiting."
@@ -240,16 +297,18 @@ run_loop() {
 
   if [[ $preflight_exit -eq 0 ]]; then
     log_ok "Tests already pass! Nothing to do."
-    sed_inplace "s/^status:.*/status: done/" "$order_file"
+    update_order_field "$order_file" "^status:.*" "status: done"
     signal_done "$task_id"
     rm -f "$state_file"
     return 0
   fi
   log_info "Tests failing as expected. Starting loop."
+  update_order_field "$order_file" "^status:.*" "status: running"
 
   # ─── Loop ────────────────────────────────────────────────
   local iteration=0
   local final_status="max_iterations"
+  local last_test_output="$preflight_output"
 
   while [[ $iteration -lt $max_iter ]]; do
     iteration=$((iteration + 1))
@@ -269,8 +328,8 @@ run_loop() {
       prompt=$(build_initial_prompt "$order_file")
     else
       local failure_summary counts passed failed
-      failure_summary=$(parse_test_failures "$preflight_output" "$test_fw")
-      counts=$(count_test_results "$preflight_output" "$test_fw")
+      failure_summary=$(parse_test_failures "$last_test_output" "$test_fw")
+      counts=$(count_test_results "$last_test_output" "$test_fw")
       passed=$(echo "$counts" | cut -d: -f1)
       failed=$(echo "$counts" | cut -d: -f2)
       prompt=$(build_retry_prompt "$order_file" "$failure_summary" "$iteration" "$((passed + failed))" "$failed")
@@ -279,7 +338,11 @@ run_loop() {
     # ── Send to agent ────────────────────────────────────
     log_info "Sending to ${agent}..."
     local agent_output
-    agent_output=$(send_to_agent "$agent" "$prompt" "$FORGE_ROOT" "$log_file" 2>&1) || true
+    local agent_exit=0
+    agent_output=$(send_to_agent "$agent" "$prompt" "$FORGE_ROOT" "$log_file" 2>&1) || agent_exit=$?
+    if [[ $agent_exit -ne 0 ]]; then
+      log_warn "Agent returned exit code ${agent_exit} on iteration ${iteration}"
+    fi
 
     if $verbose; then
       echo "$agent_output"
@@ -309,9 +372,9 @@ run_loop() {
     local current_hash
     current_hash=$(hash_current_diff "$FORGE_ROOT")
     # Include test output in hash to detect test-framework loops
-    if [[ -n "${preflight_output:-}" ]]; then
+    if [[ -n "${last_test_output:-}" ]]; then
       local test_hash
-      test_hash=$(echo "$preflight_output" | portable_md5)
+      test_hash=$(echo "$last_test_output" | portable_hash)
       current_hash="${current_hash}:${test_hash}"
     fi
     if check_oscillation "$current_hash" "$hash_file"; then
@@ -324,10 +387,10 @@ run_loop() {
     # ── Run tests ────────────────────────────────────────
     log_info "Running tests: ${test_cmd}"
     local test_exit=0
-    preflight_output=$(run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1) || test_exit=$?
+    last_test_output=$(run_test_suite "$test_cmd" "$FORGE_ROOT" 2>&1) || test_exit=$?
 
     local counts passed failed
-    counts=$(count_test_results "$preflight_output" "$test_fw")
+    counts=$(count_test_results "$last_test_output" "$test_fw")
     passed=$(echo "$counts" | cut -d: -f1)
     failed=$(echo "$counts" | cut -d: -f2)
 
@@ -343,7 +406,7 @@ run_loop() {
     else
       log_warn "Tests: ${passed} passed, ${failed} failed"
       local failures
-      failures=$(parse_test_failures "$preflight_output" "$test_fw")
+      failures=$(parse_test_failures "$last_test_output" "$test_fw")
       echo "  ${failures}" | head -5 | sed 's/^/    /'
     fi
   done
@@ -362,11 +425,11 @@ run_loop() {
   # Update state
   case "$final_status" in
     converged)
-      sed_inplace "s/^status:.*/status: done/" "$order_file"
+      update_order_field "$order_file" "^status:.*" "status: done"
       signal_done "$task_id"
       ;;
     oscillation|max_iterations|isolation_violation)
-      sed_inplace "s/^status:.*/status: failed/" "$order_file"
+      update_order_field "$order_file" "^status:.*" "status: failed"
       ;;
   esac
 
@@ -383,7 +446,11 @@ run_loop() {
       >> "$FORGE_DIR/context/lessons.md"
   fi
 
-  return $( [[ "$final_status" == "converged" ]] && echo 0 || echo 1 )
+  if [[ "$final_status" == "converged" ]]; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 # ─── Entry ────────────────────────────────────────────────────

@@ -38,12 +38,9 @@ forge_init() {
 
   printf '%s\n' \
     "max_parallel_agents=3" \
-    "architect_agent=claude" \
     "default_max_iterations=30" \
     "default_agent=claude" \
     "default_test_framework=pytest" \
-    "oscillation_window=3" \
-    "log_agent_output=true" \
     > .forge/config
 
   printf '%s\n' \
@@ -78,11 +75,16 @@ main() {
     loop) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-loop" "$@" ;;
     session) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-session" "$@" ;;
     status) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-status" "$@" ;;
-    done) shift; source "$LIB_DIR/common.sh"; init_forge_root; signal_done "${1:?Usage: forge done <task_id>}" ;;
+    done) shift; source "$LIB_DIR/common.sh"; init_forge_root
+      local tid="${1:?Usage: forge done <task_id>}"
+      validate_task_id "$tid" || exit 1
+      signal_done "$tid" ;;
     log) shift; source "$LIB_DIR/common.sh"; init_forge_root
       local tid="${1:?Usage: forge log <task_id>}"
       local logfile; logfile=$(ls -t "$FORGE_DIR/sessions/logs/${tid}"*.log 2>/dev/null | head -1)
-      if [[ -n "$logfile" ]]; then less +G "$logfile"; else echo "No logs for ${tid}"; fi ;;
+      if [[ -n "$logfile" ]]; then
+        if [[ -t 1 ]]; then less +G "$logfile"; else cat "$logfile"; fi
+      else echo "No logs for ${tid}"; fi ;;
     review) shift; source "$LIB_DIR/common.sh"; init_forge_root; exec "$SCRIPT_DIR/forge-review" "$@" ;;
     *) echo "Unknown: ${cmd}. Run 'forge --help'." >&2; exit 1 ;;
   esac

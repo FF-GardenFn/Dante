@@ -65,9 +65,9 @@ Use the task-decomposer agent for complex decomposition. Use the test-architect 
 
 ### Fix Failures Autonomously
 When a loop fails, do not ask the user what to do. Diagnose from the logs (`forge log <id>`), then act:
-- **Oscillation** → Rewrite the goal to be more specific, or redesign tests via `/forge:test`
-- **Max iterations** → Decompose further via `/forge:plan`
-- **File isolation** → Adjust `files_allowed` and re-launch
+- **Oscillation** → Rewrite the goal to be more specific, or redesign tests via `/forge:test`, then re-launch via `/forge:implement`
+- **Max iterations** → Decompose further via `/forge:plan`, then re-launch via `/forge:implement`
+- **File isolation** → Adjust `files_allowed` and re-launch via `/forge:implement`
 
 Only escalate to the user after two different approaches have failed.
 
@@ -75,7 +75,7 @@ Only escalate to the user after two different approaches have failed.
 After any loop completes (success or failure), append 2-3 sentences to `.forge/context/lessons.md`:
 
 ```
-[DATE] [TASK_ID] What happened and what to remember next time.
+[YYYY-MM-DD] [TASK_ID] What happened and what to remember next time.
 ```
 
 This compounds. Future agents receive this context in their prompts.

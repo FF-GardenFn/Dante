@@ -80,7 +80,7 @@ If recommending retry, suggest specific adjustments: rewrite goal, adjust file s
 After every review — success or failure — append 2-3 sentences to `.forge/context/lessons.md`:
 
 ```
-[DATE] [TASK_ID] What happened, what worked or failed, what to do differently next time.
+[YYYY-MM-DD] [TASK_ID] What happened, what worked or failed, what to do differently next time.
 ```
 
 Be specific. Bad: "Task was hard." Good: "T03 oscillated because tests checked internal method names; switching to behavioral assertions resolved it in 4 iterations."

@@ -80,4 +80,12 @@ If tests pass, the implementation already exists or tests are vacuous. Investiga
 
 ## Step 6: Update the Work Order
 
-If the work order exists but lacks a `test_cmd`, note the correct test_cmd to use. Report what was created and the test_cmd for the corresponding implementation work order.
+If the work order exists but lacks a `test_cmd`, update it:
+
+```bash
+# Edit the work order to add the test_cmd
+forge order edit <id>
+# Set test_cmd to the correct command, e.g.: bash .forge/tests/run_<id>.sh
+```
+
+Report what was created: test file paths, the `test_cmd` value, and pre-flight failure confirmation.

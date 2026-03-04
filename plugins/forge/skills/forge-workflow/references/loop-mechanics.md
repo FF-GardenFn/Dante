@@ -18,7 +18,7 @@ Built from these sources, concatenated in order:
 1. **Header**: "ITERATION N -- TESTS STILL FAILING"
 2. **Original Task**: Goal repeated for context
 3. **Test Results**: Pass/fail counts
-4. **Failure Details**: Parsed failure lines (max 10) from test output
+4. **Failure Details**: Parsed failure lines (max 5) from test output
 5. **Instructions**: Fix remaining failures, minimal changes, preserve working fixes
 
 Failure details come from `parse_test_failures()` which extracts lines matching:
@@ -30,11 +30,13 @@ Failure details come from `parse_test_failures()` which extracts lines matching:
 ## Agent Dispatch
 
 `send_to_agent()` dispatches to the configured CLI:
-- **claude**: `claude -p "$prompt" --output-format text --allowedTools Edit,Write,Read,Bash,Glob,Grep`
+- **claude**: `claude -p "$prompt" --output-format text --allowedTools Edit,Write,Read,Glob,Grep`
 - **codex**: `codex "$prompt"`
 - **gemini**: `gemini "$prompt"`
 
 All agents run in the project root. Output captured and logged.
+
+Note: The subprocess tool list intentionally differs from orchestrator tool lists. Bash is excluded to enforce file isolation — agents must use Edit/Write/Read instead.
 
 ## Oscillation Detection
 

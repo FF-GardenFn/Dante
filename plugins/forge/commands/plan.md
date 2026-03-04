@@ -49,7 +49,7 @@ forge order create <ID> \
   --priority <1-5>
 ```
 
-ID naming: `T##` for test tasks, `C##` for code tasks, `R##` for refactors, `F##` for fixes.
+ID naming: `T##` for test tasks, `C##` for code tasks, `R##` for refactors, `F##` for fixes, `D##` for documentation.
 
 **Critical rules for test_cmd:**
 - NO pipes (`|`), semicolons (`;`), backticks, `$()`, or `&`
