@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "forge",
-      "source": "./.claude/forge",
+      "source": "./plugins/forge",
       "description": "Orchestrate Forge convergence loops — decompose goals, design Goodhart-resistant tests, launch loops, review results",
       "version": "0.1.0",
       "author": {

@@ -60,7 +60,7 @@ Install the Forge plugin from the Dante marketplace:
 /plugin install forge@dante
 ```
 
-Or use it directly — the `.claude/forge/` directory provides slash commands:
+Or use it directly — the `plugins/forge/` directory provides slash commands:
 
 | Command | Purpose |
 |---------|---------|
@@ -76,7 +76,8 @@ forge/              CLI orchestration system (bash)
   bin/              forge, forge-loop, forge-order, forge-session, forge-review, forge-status
   lib/              common.sh — portable helpers, test parsing, isolation checks
   tests/            Self-test harness (6 tests)
-.claude/forge/      Claude Code plugin (commands, agents, skills)
+plugins/forge/      Claude Code plugin (commands, agents, skills)
+.claude-plugin/     Marketplace catalog
 .forge/             Runtime state (initialized per project via forge init)
 ```
 

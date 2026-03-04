@@ -86,6 +86,6 @@ transformers_cache/
 forge/tests/tmp/
 
 # Project-specific
-.claude/settings.local.json
+.claude/
 remotegit
 alchemy/
