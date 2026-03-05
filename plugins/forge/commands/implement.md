@@ -28,6 +28,9 @@ If any are missing, fill them in. Do NOT launch without a test_cmd.
 ## Step 3: Pre-flight Checks
 
 ```bash
+# Working tree must be clean (forge-loop enforces this)
+git status --porcelain | grep -v '^\(..\) \.forge/'
+
 # Tests should currently FAIL (nothing to implement otherwise)
 <test_cmd>
 
@@ -37,6 +40,8 @@ forge order show <id>
 # Check no active session already running
 forge status
 ```
+
+If the working tree is dirty, tell the user to commit or stash changes before launching. The convergence loop requires a clean baseline to detect agent modifications and enable auto-revert on isolation violations.
 
 ## Step 4: Review What the Agent Will See
 
