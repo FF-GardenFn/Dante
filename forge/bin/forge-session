@@ -41,8 +41,21 @@ session_launch() {
 
   local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
   if [[ -f "$state_file" ]]; then
-    log_warn "Task ${task_id} already has an active session."
-    return 1
+    # Check if it's a stale state file from a completed loop (no active tmux session)
+    if grep -q "^final_status=" "$state_file" 2>/dev/null; then
+      local old_session
+      old_session=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^forge-${task_id}-" | head -1 || true)
+      if [[ -z "$old_session" ]]; then
+        log_info "Cleaning stale state file from previous run."
+        rm -f "$state_file"
+      else
+        log_warn "Task ${task_id} has an active session: ${old_session}"
+        return 1
+      fi
+    else
+      log_warn "Task ${task_id} already has an active session."
+      return 1
+    fi
   fi
 
   local active_count max_parallel

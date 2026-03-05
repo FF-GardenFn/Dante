@@ -175,6 +175,8 @@ When the user reports a failure or you detect one via `forge status` / `forge lo
 5. Apply the fix: rewrite goal, adjust scope, decompose via `/forge:plan`, or redesign tests via `/forge:test`
 6. **Present updated launch commands in a new Handoff Report**
 
+Re-launching after failure works automatically — `forge session launch` detects stale state files from completed loops and cleans them up. The user can paste the retry command directly.
+
 ### Capture Lessons
 
 After any outcome, append 2-3 sentences to `.forge/context/lessons.md`:
