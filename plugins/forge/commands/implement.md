@@ -1,16 +1,16 @@
 ---
-description: Create an implementation work order and optionally launch the convergence loop
-argument-hint: <work-order-id> [--launch]
+description: Create an implementation work order and prepare a handoff report for the user to launch convergence loops
+argument-hint: <work-order-id>
 allowed-tools: [Read, Bash, Glob, Grep, Write]
 ---
 
-# Forge Implement: Create Work Order and Launch Loop
+# Forge Implement: Create Work Order and Prepare Handoff
 
 Target: $ARGUMENTS
 
 ## Step 1: Determine Context
 
-Parse the arguments. If a work order ID is provided, read it with `forge order show <id>`. If `--launch` is present, immediately start the convergence loop after validation.
+Parse the arguments. If a work order ID is provided, read it with `forge order show <id>`.
 
 If no work order exists yet, gather information to create one.
 
@@ -101,45 +101,83 @@ forge order create <ID> \
   --priority <priority>
 ```
 
-## Step 6: Launch (if requested)
+## Step 6: Present Handoff Report
 
-For foreground execution:
-```bash
-forge loop <ID> --agent claude --max-iter 30
+**CRITICAL: Do NOT run `forge loop`, `forge session launch`, or any long-running forge commands via Bash. These spawn subprocesses that require a user terminal. Present them to the user instead.**
+
+After creating or validating the work order, present a consolidated handoff report. If multiple work orders were prepared (e.g., from a prior `/forge:plan`), include all of them in a single report.
+
+```
+═══════════════════════════════════════════════════
+  FORGE HANDOFF — Ready to Launch
+═══════════════════════════════════════════════════
+
+  PREPARED:
+    Work Orders: <list all IDs and their one-line goals>
+    Test Suites: <list all test file paths>
+    Dependencies: <show which orders depend on which>
+
+  LAUNCH COMMANDS (paste in your terminal):
+
+    # --- Wave N (label: parallel / after Wave N-1) ---
+    forge session launch <ID> --agent claude --max-iter <N> --detach
+
+  MONITOR (you can run these anytime):
+    forge status                 # overview dashboard
+    forge session list           # all active sessions
+    forge session attach <ID>    # watch a specific session live
+    forge log <ID>               # read completed session logs
+
+  AFTER COMPLETION:
+    Ask me to run /forge:review <ID> for each completed task.
+
+═══════════════════════════════════════════════════
 ```
 
-For background tmux:
-```bash
-forge session launch <ID> --agent claude --max-iter 30 --detach
-```
+Group work orders into waves based on `depends_on`:
+- **Wave 1**: Orders with no dependencies (can all run in parallel)
+- **Wave 2**: Orders whose dependencies are all in Wave 1
+- Continue until all orders are assigned
 
-Report monitoring options:
-- `forge status` -- dashboard
-- `forge session attach <ID>` -- watch live
-- `forge log <ID>` -- logs after completion
+Set `--max-iter` based on task complexity:
+- Simple (1-2 files, clear goal): **15**
+- Medium (3-5 files, some ambiguity): **30**
+- Complex (5+ files or tricky logic): **50**
 
-## Step 7: Exit Conditions and Autonomous Recovery
+## Step 7: Post-Launch Support
 
-Four possible outcomes:
+After the user launches loops, you can help monitor and diagnose.
 
-1. **Converged** -- all tests pass. Run `/forge:review <id>` to verify quality.
-2. **Max iterations** -- task too large or test failures too vague. Decompose further via `/forge:plan`.
-3. **Oscillation** -- agent producing same diff repeatedly. Rewrite goal to be more specific, or redesign tests via `/forge:test`.
-4. **File isolation violated** -- agent touched forbidden files. Adjust `files_allowed` and re-launch.
+### What You CAN Do (via Bash)
+- `forge status` — check dashboard
+- `forge log <id>` — read session logs after completion
+- `forge order show <id>` — inspect work order state
+- `git status`, `git diff --stat` — check working directory
 
-**On failure, do NOT ask the user what to do.**
+### What You Must NOT Do (terminal only)
+- `forge loop`, `forge session launch`, `forge session attach`
 
-First, verify the working directory is clean or recoverable via `git status` and `git diff --stat`. If files outside `files_allowed` were touched, revert with `git checkout -- .` before retrying.
+### Diagnosing Failures
 
-Diagnose from the logs (`forge log <id>`), then act:
+Four possible outcomes from a convergence loop:
 
-- Read the session log to identify the failure pattern
-- Apply the appropriate fix from above
-- Re-launch the loop with adjusted parameters
+1. **Converged** — all tests pass. Suggest `/forge:review <id>`.
+2. **Max iterations** — task too large or failures too vague.
+3. **Oscillation** — agent flip-flopping between approaches.
+4. **File isolation violated** — agent touched forbidden files.
 
-Only escalate to the user after **two different approaches** have failed.
+When the user reports a failure or you detect one via `forge status` / `forge log`:
 
-After any outcome (success or failure), append 2-3 sentences to `.forge/context/lessons.md`:
+1. Read the session log: `forge log <id>`
+2. Check working directory: `git status`, `git diff --stat`
+3. Diagnose the root cause
+4. If files outside scope were touched, run `git checkout -- .` to clean up
+5. Apply the fix: rewrite goal, adjust scope, decompose via `/forge:plan`, or redesign tests via `/forge:test`
+6. **Present updated launch commands in a new Handoff Report**
+
+### Capture Lessons
+
+After any outcome, append 2-3 sentences to `.forge/context/lessons.md`:
 ```
 [YYYY-MM-DD] [TASK_ID] What happened and what to remember next time.
 ```

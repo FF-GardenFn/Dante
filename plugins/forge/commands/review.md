@@ -73,7 +73,17 @@ Provide a structured assessment:
 - [ ] Request cleanup (create follow-up work order)
 - [ ] Reject and retry with adjusted parameters
 
-If recommending retry, suggest specific adjustments: rewrite goal, adjust file scope, redesign tests, or increase max iterations.
+If recommending retry:
+1. Specify the adjustments needed (rewrite goal, adjust file scope, redesign tests, or increase max iterations)
+2. Apply those changes to the work order
+3. Present a mini Handoff Report with the corrected launch command:
+
+```
+  RETRY (paste in your terminal):
+    forge session launch <ID> --agent claude --max-iter <N> --detach
+```
+
+Do NOT re-launch the loop via Bash — present the command for the user to run.
 
 ## Step 4: Capture Lessons
 

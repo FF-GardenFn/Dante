@@ -71,3 +71,39 @@ Ask the user to confirm before executing any commands.
 ## Step 6: Execute (Only After Confirmation)
 
 Run each `forge order create` command. Verify with `forge order list` that all orders were created correctly and the dependency chain is coherent.
+
+## Step 7: Present Handoff Report
+
+After all work orders are created, present a consolidated Handoff Report so the user knows exactly what to launch. Use the standard format:
+
+```
+═══════════════════════════════════════════════════
+  FORGE HANDOFF — Ready to Launch
+═══════════════════════════════════════════════════
+
+  PREPARED:
+    Work Orders: <all IDs with one-line goals>
+    Test Suites: <test file paths, if created>
+    Dependencies: <dependency graph from Step 5>
+
+  LAUNCH COMMANDS (paste in your terminal):
+
+    # --- Wave 1 (parallel, no dependencies) ---
+    forge session launch <ID> --agent claude --max-iter <N> --detach
+
+    # --- Wave 2 (after Wave 1 completes) ---
+    forge session launch <ID> --agent claude --max-iter <N> --detach
+
+  MONITOR:
+    forge status                 # dashboard
+    forge session list           # all sessions
+    forge session attach <ID>    # watch live
+    forge log <ID>               # read logs
+
+  AFTER COMPLETION:
+    Ask me to run /forge:review <ID> for each task.
+
+═══════════════════════════════════════════════════
+```
+
+**Do NOT run `forge loop` or `forge session launch` via Bash.** These are terminal commands for the user to paste.

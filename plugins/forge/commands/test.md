@@ -88,4 +88,20 @@ forge order edit <id>
 # Set test_cmd to the correct command, e.g.: bash .forge/tests/run_<id>.sh
 ```
 
-Report what was created: test file paths, the `test_cmd` value, and pre-flight failure confirmation.
+Present a structured summary of what was created:
+
+```
+───────────────────────────────────────────────────
+  FORGE TEST SUITE — Created
+───────────────────────────────────────────────────
+
+  WORK ORDER: <ID>
+  TEST FILE:  <path to test file>
+  RUNNER:     <path to .forge/tests/run_<id>.sh, if created>
+  TEST CMD:   <the test_cmd value set on the work order>
+
+  PRE-FLIGHT: Tests fail as expected (<N> failures)
+
+  NEXT STEP:  Run /forge:implement <ID> to prepare the launch handoff.
+───────────────────────────────────────────────────
+```
