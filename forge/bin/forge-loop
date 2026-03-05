@@ -235,28 +235,6 @@ run_loop() {
   local hash_file="$FORGE_DIR/hashes/${task_id}.hashes"
   : > "$hash_file"
 
-  # Session state file (atomic write via temp + rename)
-  local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
-  {
-    echo "task_id=${task_id}"
-    echo "agent=${agent}"
-    echo "started=${timestamp}"
-    echo "max_iterations=${max_iter}"
-    echo "test_cmd=${test_cmd}"
-    echo "status=running"
-    echo "iteration=0"
-    echo "last_test_result=pending"
-  } > "${state_file}.tmp"
-  mv "${state_file}.tmp" "$state_file"
-
-  _loop_cleanup() {
-    if [[ -f "$state_file" ]] && ! grep -q "^final_status=" "$state_file" 2>/dev/null; then
-      rm -f "$state_file"
-    fi
-    rm -f "$hash_file" "${hash_file}.lock"
-  }
-  trap '_loop_cleanup' EXIT INT TERM
-
   local goal
   goal=$(parse_order_field "$order_file" "goal")
 
@@ -278,6 +256,28 @@ run_loop() {
     echo "DRY RUN — would execute the above. Exiting."
     return 0
   fi
+
+  # Session state file (atomic write via temp + rename)
+  local state_file="$FORGE_DIR/sessions/active/${task_id}.state"
+  {
+    echo "task_id=${task_id}"
+    echo "agent=${agent}"
+    echo "started=${timestamp}"
+    echo "max_iterations=${max_iter}"
+    echo "test_cmd=${test_cmd}"
+    echo "status=running"
+    echo "iteration=0"
+    echo "last_test_result=pending"
+  } > "${state_file}.tmp"
+  mv "${state_file}.tmp" "$state_file"
+
+  _loop_cleanup() {
+    if [[ -n "${state_file:-}" ]] && [[ -f "$state_file" ]] && ! grep -q "^final_status=" "$state_file" 2>/dev/null; then
+      rm -f "$state_file"
+    fi
+    rm -f "${hash_file:-}" "${hash_file:-}.lock" 2>/dev/null || true
+  }
+  trap '_loop_cleanup' EXIT INT TERM
 
   # ─── Pre-flight: verify clean worktree ───────────────────
   # Exclude .forge/ (runtime state managed by forge itself)
